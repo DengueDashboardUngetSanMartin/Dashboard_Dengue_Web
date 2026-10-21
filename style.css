@@ -371,7 +371,7 @@ body {
     display: grid;
 
     grid-template-columns:
-        repeat(6, 1fr);
+        repeat(8, 1fr);
 
     gap: 8px;
 
@@ -475,6 +475,10 @@ body {
 
 .blue .card-icon {
     background: #0877c9;
+}
+
+.orange .card-icon {
+    background: #f07a1a;
 }
 
 

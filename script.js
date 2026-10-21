@@ -233,6 +233,41 @@ function recuperada(f) {
     return texto(f.recuperacion_vivienda_indicador_ini) !== "";
 }
 
+// ============================================================
+// VIVIENDAS Y RECIPIENTES POSITIVOS
+// ============================================================
+
+const CAMPOS_RECIPIENTES_POSITIVOS = [
+    "tanque_alto_P",
+    "tanque_bajo_P",
+    "barril_cilindro_P",
+    "sanson_bidon_P",
+    "baldes_bateas_tinajas_P",
+    "llantas_P",
+    "floreros_maceteros_P",
+    "latas_botellas_P",
+    "otros_P",
+    "inservibles_P"
+];
+
+function cantidadRecipientesPositivos(f) {
+    return CAMPOS_RECIPIENTES_POSITIVOS.reduce(
+        (total, campo) => total + Math.max(0, numero(f[campo])),
+        0
+    );
+}
+
+function viviendaPositiva(f) {
+    return cantidadRecipientesPositivos(f) > 0;
+}
+
+function camposPositivosParaDescarga(f) {
+    return {
+        "Vivienda positiva": viviendaPositiva(f) ? "Sí" : "No",
+        "Recipientes positivos": cantidadRecipientesPositivos(f)
+    };
+}
+
 function estadoVivienda(f) {
     if (cerrada(f)) return "CERRADA";
     if (renuente(f)) return "RENUENTE";
@@ -563,6 +598,13 @@ function actualizarTarjetas() {
     setTexto("totalRecuperadas",
         fmt(datosFiltrados.filter(recuperada).length));
 
+    setTexto("totalViviendasPositivas",
+        fmt(datosFiltrados.filter(viviendaPositiva).length));
+
+    setTexto("totalRecipientesPositivos",
+        fmt(datosFiltrados.reduce(
+            (total, f) => total + cantidadRecipientesPositivos(f), 0)));
+
     setTexto(
         "totalInspectores",
         fmt(new Set(
@@ -861,7 +903,9 @@ function actualizarTabla() {
                 cerradas: 0,
                 renuentes: 0,
                 deshabitadas: 0,
-                recuperadas: 0
+                recuperadas: 0,
+                positivas: 0,
+                recipientesPositivos: 0
             };
         }
 
@@ -870,6 +914,8 @@ function actualizarTabla() {
         if (renuente(fila)) localidades[loc].renuentes++;
         if (deshabitada(fila)) localidades[loc].deshabitadas++;
         if (recuperada(fila)) localidades[loc].recuperadas++;
+        if (viviendaPositiva(fila)) localidades[loc].positivas++;
+        localidades[loc].recipientesPositivos += cantidadRecipientesPositivos(fila);
     });
 
     tbody.innerHTML = "";
@@ -886,7 +932,9 @@ function actualizarTabla() {
                 fmt(v.cerradas),
                 fmt(v.renuentes),
                 fmt(v.deshabitadas),
-                fmt(v.recuperadas)
+                fmt(v.recuperadas),
+                fmt(v.positivas),
+                fmt(v.recipientesPositivos)
             ].forEach(valor => {
                 const td = document.createElement("td");
                 td.textContent = valor;
@@ -1103,6 +1151,9 @@ function configurarBotones() {
 
     const dir = document.getElementById("btnExcelDirecciones");
     if (dir) dir.onclick = descargarDirecciones;
+
+    const pos = document.getElementById("btnExcelPositivos");
+    if (pos) pos.onclick = descargarPositivos;
 }
 
 function obtenerDatosParaDescarga() {
@@ -1156,7 +1207,9 @@ function descargarDetallesLocalidad() {
                 "Cerradas": 0,
                 "Renuentes": 0,
                 "Deshabitadas": 0,
-                "Recuperadas": 0
+                "Recuperadas": 0,
+                "Viviendas positivas": 0,
+                "Recipientes positivos": 0
             };
         }
 
@@ -1167,6 +1220,8 @@ function descargarDetallesLocalidad() {
         if (renuente(fila)) resumen[localidad].Renuentes++;
         if (deshabitada(fila)) resumen[localidad].Deshabitadas++;
         if (recuperada(fila)) resumen[localidad].Recuperadas++;
+        if (viviendaPositiva(fila)) resumen[localidad]["Viviendas positivas"]++;
+        resumen[localidad]["Recipientes positivos"] += cantidadRecipientesPositivos(fila);
     });
 
     descargarExcelSeguro(
@@ -1188,7 +1243,8 @@ function descargarViviendasInspector() {
         "Persona que atiende": texto(fila.persona_atiende),
         "Número de residentes": texto(fila.numero_residentes),
         "Hora de ingreso": texto(fila.hora_ingreso),
-        "Hora de salida": texto(fila.hora_salida)
+        "Hora de salida": texto(fila.hora_salida),
+        ...camposPositivosParaDescarga(fila)
     }));
 
     descargarExcelSeguro(resultado, "Viviendas_por_inspector");
@@ -1207,10 +1263,27 @@ function descargarDirecciones() {
         "Persona que atiende": texto(fila.persona_atiende),
         "Número de residentes": texto(fila.numero_residentes),
         "Hora de ingreso": texto(fila.hora_ingreso),
-        "Hora de salida": texto(fila.hora_salida)
+        "Hora de salida": texto(fila.hora_salida),
+        ...camposPositivosParaDescarga(fila)
     }));
 
     descargarExcelSeguro(resultado, "Direcciones_filtradas");
+}
+
+function descargarPositivos() {
+    const resultado = obtenerDatosParaDescarga()
+        .filter(viviendaPositiva)
+        .map(fila => ({
+            "Fecha de inspección": texto(fila.fecha_inspeccion),
+            "Localidad": texto(fila.localidad_eess),
+            "Sector": texto(fila.sector),
+            "Código de manzana": texto(fila.codigo_manzana),
+            "Dirección": texto(fila.direccion),
+            "Inspector": texto(fila.nombre_inspector),
+            "Recipientes positivos": cantidadRecipientesPositivos(fila)
+        }));
+
+    descargarExcelSeguro(resultado, "Viviendas_y_recipientes_positivos");
 }
 
 // ============================================================
