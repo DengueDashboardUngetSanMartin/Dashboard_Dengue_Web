@@ -1270,20 +1270,179 @@ function descargarDirecciones() {
     descargarExcelSeguro(resultado, "Direcciones_filtradas");
 }
 
-function descargarPositivos() {
-    const resultado = obtenerDatosParaDescarga()
-        .filter(viviendaPositiva)
-        .map(fila => ({
-            "Fecha de inspección": texto(fila.fecha_inspeccion),
-            "Localidad": texto(fila.localidad_eess),
-            "Sector": texto(fila.sector),
-            "Código de manzana": texto(fila.codigo_manzana),
-            "Dirección": texto(fila.direccion),
-            "Inspector": texto(fila.nombre_inspector),
-            "Recipientes positivos": cantidadRecipientesPositivos(fila)
-        }));
+// Código de tipo de criadero para el reporte de positivos
+const CODIGOS_CRIADERO_POSITIVO = [
+    ["tanque_alto_P", 1],
+    ["tanque_bajo_P", 2],
+    ["barril_cilindro_P", 3],
+    ["sanson_bidon_P", 4],
+    ["baldes_bateas_tinajas_P", 5],
+    ["llantas_P", 6],
+    ["floreros_maceteros_P", 7],
+    ["latas_botellas_P", 8],
+    ["inservibles_P", 9],
+    ["otros_P", 10]
+];
 
-    descargarExcelSeguro(resultado, "Viviendas_y_recipientes_positivos");
+// ============================================================
+// FORMATO DE LECTURA DE MUESTRAS (viviendas positivas)
+// Una fila por cada recipiente positivo, con su código de criadero.
+// ============================================================
+
+function asegurarExcelJS(callback) {
+    if (typeof ExcelJS !== "undefined") {
+        callback();
+        return;
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js";
+    script.onload = callback;
+    script.onerror = () => alert("No se pudo cargar la herramienta de Excel.");
+    document.head.appendChild(script);
+}
+
+function nombrePropio(valor) {
+    return texto(valor)
+        .toLowerCase()
+        .replace(/(^|[\s\-\/(])([a-záéíóúñü])/g, (m, a, b) => a + b.toUpperCase());
+}
+
+function valorNumeroOTexto(valor) {
+    const t = texto(valor);
+    return /^\d+$/.test(t) ? Number(t) : t;
+}
+
+function fechaExcel(valor) {
+    const m = texto(valor).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return texto(valor);
+    return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+}
+
+function direccionJefeFamilia(fila) {
+    // Mismo formato del registro: "DIRECCION / /JEFE DE FAMILIA"
+    const familia = texto(fila.nombreFamilia) || "-";
+    return texto(fila.direccion) + " / /" + familia;
+}
+
+function filasLecturaMuestras() {
+    const filas = [];
+
+    obtenerDatosParaDescarga()
+        .filter(viviendaPositiva)
+        .sort((a, b) =>
+            texto(a.fecha_inspeccion).slice(0, 10).localeCompare(texto(b.fecha_inspeccion).slice(0, 10)) ||
+            texto(a.localidad_eess).localeCompare(texto(b.localidad_eess)) ||
+            (numero(a.sector) - numero(b.sector)) ||
+            (numero(a.codigo_manzana) - numero(b.codigo_manzana)) ||
+            texto(a.direccion).localeCompare(texto(b.direccion))
+        )
+        .forEach(fila => {
+            CODIGOS_CRIADERO_POSITIVO.forEach(([campo, codigo]) => {
+                const cantidad = Math.floor(Math.max(0, numero(fila[campo])));
+                for (let i = 0; i < cantidad; i++) {
+                    filas.push([
+                        filas.length + 1,
+                        nombrePropio(fila.distrito),
+                        nombrePropio(fila.localidad_eess),
+                        valorNumeroOTexto(fila.sector),
+                        fechaExcel(fila.fecha_inspeccion),
+                        valorNumeroOTexto(fila.codigo_manzana),
+                        direccionJefeFamilia(fila),
+                        texto(fila.nombre_inspector),
+                        codigo,
+                        "", "", "", "", ""
+                    ]);
+                }
+            });
+        });
+
+    return filas;
+}
+
+function descargarPositivos() {
+    const filas = filasLecturaMuestras();
+
+    if (filas.length === 0) {
+        alert("No hay viviendas positivas con los filtros actuales.");
+        return;
+    }
+
+    asegurarExcelJS(async function () {
+        const libro = new ExcelJS.Workbook();
+        const hoja = libro.addWorksheet("Lectura de muestras");
+
+        hoja.columns = [
+            { width: 6 }, { width: 14 }, { width: 22 }, { width: 9 },
+            { width: 12 }, { width: 8 }, { width: 58 }, { width: 36 },
+            { width: 7 }, { width: 5 }, { width: 5 }, { width: 5 },
+            { width: 10 }, { width: 9 }
+        ];
+
+        const distritos = [...new Set(filas.map(f => f[1]).filter(Boolean))];
+        const subtitulo = (distritos.length === 1 ? distritos[0] + " - " : "") +
+            "Vigilancia Entomológicas";
+
+        const borde = {
+            top: { style: "thin" }, left: { style: "thin" },
+            bottom: { style: "thin" }, right: { style: "thin" }
+        };
+
+        hoja.mergeCells("A1:N1");
+        hoja.getCell("A1").value = "FORMATO DE LECTURA DE MUESTRAS";
+        hoja.getCell("A1").font = { bold: true, size: 16 };
+        hoja.getCell("A1").alignment = { horizontal: "center", vertical: "middle" };
+        hoja.getRow(1).height = 24;
+
+        hoja.mergeCells("A2:N2");
+        hoja.getCell("A2").value = subtitulo;
+        hoja.getCell("A2").alignment = { horizontal: "center", vertical: "middle" };
+
+        const encabezados = [
+            "N°", "DISTRITO", "LOCALIDAD", "SECTOR", "FECHA", "MZ.",
+            "DIRECCION O NOMBRE DE JEFE DE FAMILIA", "NOMBRE DE INSPECTOR",
+            "N° C", "L", "P", "A", "AEDES AEGYPTI", "OTROS"
+        ];
+        const filaEnc = hoja.getRow(3);
+        filaEnc.values = encabezados;
+        filaEnc.height = 45;
+        filaEnc.eachCell(celda => {
+            celda.font = { bold: true, size: 10 };
+            celda.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+            celda.border = borde;
+        });
+
+        filas.forEach(valores => {
+            const r = hoja.addRow(valores);
+            for (let c = 1; c <= 14; c++) {
+                const celda = r.getCell(c);
+                celda.border = borde;
+                celda.font = { size: 10 };
+                if (c !== 1 && c !== 7 && c !== 8) {
+                    celda.alignment = { horizontal: "center" };
+                }
+            }
+            r.getCell(5).numFmt = "d/mm/yyyy";
+        });
+
+        hoja.views = [{ state: "frozen", ySplit: 3 }];
+        hoja.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
+        hoja.pageSetup.printTitlesRow = "1:3";
+
+        const buffer = await libro.xlsx.writeBuffer();
+        const blob = new Blob([buffer], {
+            type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        });
+        const enlace = document.createElement("a");
+        enlace.href = URL.createObjectURL(blob);
+        enlace.download = "Formato_lectura_muestras.xlsx";
+        document.body.appendChild(enlace);
+        enlace.click();
+        setTimeout(() => {
+            URL.revokeObjectURL(enlace.href);
+            enlace.remove();
+        }, 1000);
+    });
 }
 
 // ============================================================
