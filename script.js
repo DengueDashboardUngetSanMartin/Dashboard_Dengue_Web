@@ -6,6 +6,8 @@
 
 let datosOriginales = [];
 let datosFiltrados = [];
+let recuperadasFiltradas = [];
+let mapaDniInspector = null;
 let charts = {};
 let mapa = null;
 let marcadores = [];
@@ -93,6 +95,7 @@ function cargarDatosCSV(esActualizacionAutomatica = false) {
             }
 
             datosOriginales = registros;
+            mapaDniInspector = null;
             ultimaCargaCSV = Date.now();
 
             console.log(
@@ -208,15 +211,35 @@ function normalizar(valor) {
         .toLowerCase();
 }
 
-// Recuperada = vivienda inspeccionada en una visita de recuperación
-// (tipo de inspección "Recuperación") o con indicador de recuperación válido
+// Recuperada = vivienda marcada como recuperada en el módulo Recuperación
+// de Dengue-Admin (columna "recuperada" = 1). En esa fila, la fecha y el
+// inspector de la recuperación están en recuperacion_fecha y
+// recuperacion_usuario_asignado (DNI), no en fecha_inspeccion/nombre_inspector.
 function recuperada(f) {
-    if (!inspeccionada(f)) return false;
+    return numero(f.recuperada) === 1;
+}
 
-    if (normalizar(f.tipoActividadInspeccion).startsWith("recuper")) return true;
+function construirMapaDni() {
+    mapaDniInspector = {};
+    datosOriginales.forEach(f => {
+        const nombre = texto(f.nombre_inspector);
+        [f.usuario_registra, f.usuario_registro].forEach(d => {
+            const dni = texto(d);
+            if (dni && dni !== "-" && nombre && !mapaDniInspector[dni]) {
+                mapaDniInspector[dni] = nombre;
+            }
+        });
+    });
+}
 
-    const ini = normalizar(f.recuperacion_vivienda_indicador_ini);
-    return ini !== "" && ini !== "0" && ini !== "null" && ini !== "undefined";
+function inspectorRecuperacion(f) {
+    if (!mapaDniInspector) construirMapaDni();
+    const dni = texto(f.recuperacion_usuario_asignado);
+    return mapaDniInspector[dni] || texto(f.nombre_inspector);
+}
+
+function fechaRecuperacion(f) {
+    return obtenerFecha(f.recuperacion_fecha) || obtenerFecha(f.fecha_inspeccion);
 }
 
 function estadoVivienda(f) {
@@ -440,73 +463,83 @@ function valorFiltro(id, porDefecto) {
 // APLICAR TODOS LOS FILTROS
 // ============================================================
 
+function leerFiltros() {
+    return {
+        localidad: valorFiltro("filtroLocalidad", "Todas"),
+        mes: valorFiltro("filtroMes", "Todos"),
+        inspector: valorFiltro("filtroInspector", "Todos"),
+        sector: valorFiltro("filtroSector", "Todos"),
+        tipo: valorFiltro("filtroTipo", "Todos"),
+        manzana: valorFiltro("filtroManzana", "Todas"),
+        fechaInicio: valorFiltro("fechaInicio", ""),
+        fechaFin: valorFiltro("fechaFin", "")
+    };
+}
+
+// nombreInspector y fecha se pasan aparte porque en las recuperaciones
+// se usan el inspector y la fecha de la recuperación.
+function cumpleFiltros(fila, F, nombreInspector, fecha, usarTipo) {
+    if (F.localidad !== "Todas" &&
+        texto(fila.localidad_eess) !== F.localidad) return false;
+
+    if (F.inspector !== "Todos" &&
+        nombreInspector !== F.inspector) return false;
+
+    if (F.sector !== "Todos" &&
+        texto(fila.sector) !== F.sector) return false;
+
+    if (usarTipo && F.tipo !== "Todos" &&
+        texto(fila.tipoActividadInspeccion) !== F.tipo) return false;
+
+    if (F.manzana !== "Todas" &&
+        texto(fila.codigo_manzana) !== F.manzana) return false;
+
+    if (F.mes !== "Todos") {
+        if (!fecha || MESES[fecha.getMonth()] !== F.mes) return false;
+    }
+
+    // Comparar fechas como YYYY-MM-DD para incluir ambos días completos.
+    if (F.fechaInicio || F.fechaFin) {
+        if (!fecha) return false;
+
+        const claveFecha = fechaLocalISO(fecha);
+
+        if (F.fechaInicio && claveFecha < F.fechaInicio) return false;
+        if (F.fechaFin && claveFecha > F.fechaFin) return false;
+    }
+
+    if (busquedaInspector !== "" &&
+        !nombreInspector.toLowerCase().includes(busquedaInspector)) return false;
+
+    return true;
+}
+
 function aplicarFiltros() {
-    const localidad = valorFiltro("filtroLocalidad", "Todas");
-    const mes = valorFiltro("filtroMes", "Todos");
-    const inspector = valorFiltro("filtroInspector", "Todos");
-    const sector = valorFiltro("filtroSector", "Todos");
-    const tipo = valorFiltro("filtroTipo", "Todos");
-    const manzana = valorFiltro("filtroManzana", "Todas");
+    const F = leerFiltros();
 
-    const fechaInicio = valorFiltro("fechaInicio", "");
-    const fechaFin = valorFiltro("fechaFin", "");
-
-    const filasFiltradas = datosOriginales.filter(fila => {
-        if (
-            localidad !== "Todas" &&
-            texto(fila.localidad_eess) !== localidad
-        ) return false;
-
-        if (
-            inspector !== "Todos" &&
-            texto(fila.nombre_inspector) !== inspector
-        ) return false;
-
-        if (
-            sector !== "Todos" &&
-            texto(fila.sector) !== sector
-        ) return false;
-
-        if (
-            tipo !== "Todos" &&
-            texto(fila.tipoActividadInspeccion) !== tipo
-        ) return false;
-
-        if (
-            manzana !== "Todas" &&
-            texto(fila.codigo_manzana) !== manzana
-        ) return false;
-
-        const fecha = obtenerFecha(fila.fecha_inspeccion);
-
-        if (mes !== "Todos") {
-            if (!fecha || MESES[fecha.getMonth()] !== mes) {
-                return false;
-            }
-        }
-
-        // Comparar fechas como YYYY-MM-DD para incluir ambos días completos.
-        if (fechaInicio || fechaFin) {
-            if (!fecha) return false;
-
-            const claveFecha = fechaLocalISO(fecha);
-
-            if (fechaInicio && claveFecha < fechaInicio) return false;
-            if (fechaFin && claveFecha > fechaFin) return false;
-        }
-
-        if (busquedaInspector !== "") {
-            if (
-                !texto(fila.nombre_inspector)
-                    .toLowerCase()
-                    .includes(busquedaInspector)
-            ) return false;
-        }
-
-        return true;
-    });
+    const filasFiltradas = datosOriginales.filter(fila =>
+        cumpleFiltros(
+            fila, F,
+            texto(fila.nombre_inspector),
+            obtenerFecha(fila.fecha_inspeccion),
+            true
+        )
+    );
 
     datosFiltrados = quitarCerradasRevisitadas(filasFiltradas);
+
+    // Recuperadas: por inspector asignado y fecha de recuperación,
+    // como en el módulo Recuperación de Dengue-Admin (sin filtro de tipo).
+    recuperadasFiltradas = datosOriginales
+        .filter(recuperada)
+        .filter(fila =>
+            cumpleFiltros(
+                fila, F,
+                inspectorRecuperacion(fila),
+                fechaRecuperacion(fila),
+                false
+            )
+        );
 }
 
 // ============================================================
@@ -546,7 +579,7 @@ function actualizarTarjetas() {
         fmt(datosFiltrados.filter(deshabitada).length));
 
     setTexto("totalRecuperadas",
-        fmt(datosFiltrados.filter(recuperada).length));
+        fmt(recuperadasFiltradas.length));
 
     setTexto(
         "totalInspectores",
@@ -673,7 +706,7 @@ function actualizarCondicion() {
         datosFiltrados.filter(cerrada).length,
         datosFiltrados.filter(renuente).length,
         datosFiltrados.filter(deshabitada).length,
-        datosFiltrados.filter(recuperada).length
+        recuperadasFiltradas.length
     ];
 
     graficoBarras(
@@ -854,7 +887,19 @@ function actualizarTabla() {
         if (cerrada(fila)) localidades[loc].cerradas++;
         if (renuente(fila)) localidades[loc].renuentes++;
         if (deshabitada(fila)) localidades[loc].deshabitadas++;
-        if (recuperada(fila)) localidades[loc].recuperadas++;
+    });
+
+    recuperadasFiltradas.forEach(fila => {
+        const loc = texto(fila.localidad_eess) || "Sin localidad";
+
+        if (!localidades[loc]) {
+            localidades[loc] = {
+                inspeccionadas: 0, cerradas: 0, renuentes: 0,
+                deshabitadas: 0, recuperadas: 0
+            };
+        }
+
+        localidades[loc].recuperadas++;
     });
 
     tbody.innerHTML = "";
@@ -1151,7 +1196,24 @@ function descargarDetallesLocalidad() {
         if (cerrada(fila)) resumen[localidad].Cerradas++;
         if (renuente(fila)) resumen[localidad].Renuentes++;
         if (deshabitada(fila)) resumen[localidad].Deshabitadas++;
-        if (recuperada(fila)) resumen[localidad].Recuperadas++;
+    });
+
+    recuperadasFiltradas.forEach(fila => {
+        const localidad = texto(fila.localidad_eess) || "Sin localidad";
+
+        if (!resumen[localidad]) {
+            resumen[localidad] = {
+                "Localidad": localidad,
+                "Total de registros": 0,
+                "Inspeccionadas": 0,
+                "Cerradas": 0,
+                "Renuentes": 0,
+                "Deshabitadas": 0,
+                "Recuperadas": 0
+            };
+        }
+
+        resumen[localidad].Recuperadas++;
     });
 
     descargarExcelSeguro(
