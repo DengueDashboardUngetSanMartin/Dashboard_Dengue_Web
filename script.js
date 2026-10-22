@@ -14,6 +14,10 @@ let marcadores = [];
 let busquedaInspector = "";
 
 const ARCHIVO_CSV = "datos.csv";
+// Primero se busca la base comprimida (la que se sube a GitHub);
+// si no existe, se usa datos.csv.
+const ARCHIVOS_GZ = ["datos.csv.gz", "datos_csv.gz"];
+let firmaUltimaCarga = "";
 const SEGUNDOS_ACTUALIZACION = 60;
 
 const MESES = [
@@ -61,67 +65,118 @@ if (document.readyState === "loading") {
 // CARGAR CSV
 // ============================================================
 
-function cargarDatosCSV(esActualizacionAutomatica = false) {
+async function urlDisponible(nombre) {
+    const url = new URL(nombre, window.location.href).href;
+    try {
+        const r = await fetch(url, { method: "HEAD", cache: "no-store" });
+        if (!r.ok) return null;
+        const firma = nombre + "|" +
+            (r.headers.get("ETag") || "") + "|" +
+            (r.headers.get("Last-Modified") || "") + "|" +
+            (r.headers.get("Content-Length") || "");
+        return { url, firma };
+    } catch (e) {
+        return null;
+    }
+}
+
+async function descargarTextoGz(url) {
+    if (typeof DecompressionStream === "undefined") {
+        throw new Error("Este navegador no puede descomprimir .gz");
+    }
+    const r = await fetch(url + "?v=" + Date.now(), { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+
+    const bytes = new Uint8Array(await r.arrayBuffer());
+
+    // Si el servidor ya lo entregó descomprimido, no empieza con 1F 8B.
+    if (!(bytes[0] === 0x1f && bytes[1] === 0x8b)) {
+        return new TextDecoder("utf-8").decode(bytes);
+    }
+
+    const flujo = new Blob([bytes]).stream()
+        .pipeThrough(new DecompressionStream("gzip"));
+    return await new Response(flujo).text();
+}
+
+async function cargarDatosCSV(esActualizacionAutomatica = false) {
     if (typeof Papa === "undefined") {
         console.error("No se encontró Papa Parse.");
         fijarTextoFecha("Error", "No se cargó la librería Papa Parse");
         return;
     }
 
-    const urlCSV = new URL(ARCHIVO_CSV, window.location.href).href
-        + "?v=" + Date.now();
-
-    Papa.parse(urlCSV, {
-        download: true,
-        header: true,
-        skipEmptyLines: true,
-        encoding: "UTF-8",
-
-        complete: function (resultado) {
-            if (resultado.errors && resultado.errors.length) {
-                console.warn("Advertencias del CSV:", resultado.errors);
-            }
-
-            const registros = (resultado.data || []).filter(
-                fila => fila && Object.keys(fila).length > 1
-            );
-
-            if (registros.length === 0) {
-                console.warn("El CSV no contiene registros.");
-                if (!esActualizacionAutomatica) {
-                    fijarTextoFecha("Sin datos", "El archivo CSV está vacío");
-                }
-                return;
-            }
-
-            datosOriginales = registros;
-            mapaDniInspector = null;
-            ultimaCargaCSV = Date.now();
-
-            console.log(
-                "CSV cargado:",
-                datosOriginales.length,
-                "registros"
-            );
-
-            console.log("Columnas:", Object.keys(datosOriginales[0]));
-
-            // Actualiza los filtros conservando las selecciones existentes.
-            inicializarFiltros();
-
-            seguro("actualizarFecha", actualizarFecha);
-            seguro("inicializarMapa", inicializarMapa);
-            seguro("actualizarDashboard", actualizarDashboard);
-        },
-
-        error: function (error) {
-            console.error("Error cargando CSV:", error);
-
-            if (!esActualizacionAutomatica) {
-                fijarTextoFecha("Sin datos", "No se pudo cargar datos.csv");
-            }
+    try {
+        // 1) Buscar la base comprimida
+        let origen = null;
+        for (const nombre of ARCHIVOS_GZ) {
+            origen = await urlDisponible(nombre);
+            if (origen) break;
         }
-    });
+
+        let textoCSV = null;
+
+        if (origen) {
+            // En la actualización automática, no volver a descargar si no cambió.
+            if (esActualizacionAutomatica && origen.firma === firmaUltimaCarga) return;
+
+            textoCSV = await descargarTextoGz(origen.url);
+            console.log("Base cargada desde:", origen.url);
+        } else {
+            // 2) Respaldo: datos.csv sin comprimir
+            origen = await urlDisponible(ARCHIVO_CSV);
+            if (!origen) throw new Error("No se encontró datos.csv.gz ni datos.csv");
+            if (esActualizacionAutomatica && origen.firma === firmaUltimaCarga) return;
+
+            const r = await fetch(origen.url + "?v=" + Date.now(), { cache: "no-store" });
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            textoCSV = await r.text();
+            console.log("Base cargada desde:", origen.url);
+        }
+
+        const resultado = Papa.parse(textoCSV, {
+            header: true,
+            skipEmptyLines: true
+        });
+
+        if (resultado.errors && resultado.errors.length) {
+            console.warn("Advertencias del CSV:", resultado.errors.slice(0, 20));
+        }
+
+        const registros = (resultado.data || []).filter(
+            fila => fila && Object.keys(fila).length > 1
+        );
+
+        if (registros.length === 0) {
+            console.warn("El CSV no contiene registros.");
+            if (!esActualizacionAutomatica) {
+                fijarTextoFecha("Sin datos", "El archivo CSV está vacío");
+            }
+            return;
+        }
+
+        firmaUltimaCarga = origen.firma;
+        datosOriginales = registros;
+        mapaDniInspector = null;
+        ultimaCargaCSV = Date.now();
+
+        console.log("CSV cargado:", datosOriginales.length, "registros");
+        console.log("Columnas:", Object.keys(datosOriginales[0]));
+
+        // Actualiza los filtros conservando las selecciones existentes.
+        inicializarFiltros();
+
+        seguro("actualizarFecha", actualizarFecha);
+        seguro("inicializarMapa", inicializarMapa);
+        seguro("actualizarDashboard", actualizarDashboard);
+
+    } catch (error) {
+        console.error("Error cargando CSV:", error);
+
+        if (!esActualizacionAutomatica) {
+            fijarTextoFecha("Sin datos", "No se pudo cargar la base de datos");
+        }
+    }
 }
 
 // ============================================================
