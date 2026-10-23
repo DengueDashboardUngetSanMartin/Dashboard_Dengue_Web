@@ -27,6 +27,7 @@ const MESES = [
 let dashboardIniciado = false;
 let temporizadorCSV = null;
 let ultimaCargaCSV = 0;
+let fechaArchivoCSV = null; // Last-Modified del datos.csv(.gz) publicado
 
 // ============================================================
 // INICIO
@@ -72,6 +73,7 @@ async function leerTextoCSV() {
         const resp = await fetch(urlGz, { cache: "no-store" });
 
         if (resp.ok) {
+            guardarFechaArchivo(resp);
             const buffer = await resp.arrayBuffer();
             const bytes = new Uint8Array(buffer);
 
@@ -91,7 +93,14 @@ async function leerTextoCSV() {
     const urlCsv = new URL(ARCHIVO_CSV_RESPALDO, window.location.href).href + version;
     const resp2 = await fetch(urlCsv, { cache: "no-store" });
     if (!resp2.ok) throw new Error("No se encontró datos.csv.gz ni datos.csv");
+    guardarFechaArchivo(resp2);
     return await resp2.text();
+}
+
+function guardarFechaArchivo(resp) {
+    const lm = resp.headers.get("last-modified");
+    const f = lm ? new Date(lm) : null;
+    fechaArchivoCSV = f && !Number.isNaN(f.getTime()) ? f : null;
 }
 
 async function cargarDatosCSV(esActualizacionAutomatica = false) {
@@ -259,6 +268,13 @@ function inspectorRecuperacion(f) {
     return mapaDniInspector[dni] || texto(f.nombre_inspector);
 }
 
+// Fecha de cada vivienda: Dengue-Admin filtra por la hora en que se
+// registró la vivienda (fecha_creacion), no por el inicio de la jornada
+// (fecha_inspeccion). Si falta fecha_creacion se usa fecha_inspeccion.
+function fechaVivienda(f) {
+    return obtenerFecha(f.fecha_creacion) || obtenerFecha(f.fecha_inspeccion);
+}
+
 function fechaRecuperacion(f) {
     return obtenerFecha(f.recuperacion_fecha) || obtenerFecha(f.fecha_inspeccion);
 }
@@ -361,8 +377,20 @@ function fijarTextoFecha(principal, secundario) {
     setTexto("horaActualizacion", secundario);
 }
 
+// Muestra la fecha de la base publicada (Last-Modified del archivo).
+// Si el servidor no la envía, usa el último registro del CSV.
 function actualizarFecha() {
-    const ahora = new Date();
+    let ahora = fechaArchivoCSV;
+    let etiqueta = "Base publicada: ";
+
+    if (!ahora) {
+        ahora = datosOriginales.reduce((max, f) => {
+            const d = obtenerFecha(f.fecha_creacion);
+            return d && (!max || d > max) ? d : max;
+        }, null);
+        etiqueta = "Último registro: ";
+    }
+    if (!ahora) ahora = new Date();
 
     const fechaTexto = ahora.toLocaleDateString("es-PE", {
         day: "2-digit",
@@ -376,7 +404,14 @@ function actualizarFecha() {
         hour12: true
     });
 
-    fijarTextoFecha(fechaTexto, "Actualizado: " + horaTexto);
+    fijarTextoFecha(fechaTexto, etiqueta + horaTexto);
+
+    const nota = document.getElementById("notaFuenteDatos");
+    if (nota) {
+        nota.textContent = "Datos de la base descargada de Dengue-Admin (" +
+            fechaTexto + " " + horaTexto + "). Las cifras pueden variar " +
+            "ligeramente con Dengue-Admin por correcciones hechas después de la descarga.";
+    }
 }
 
 // ============================================================
@@ -578,7 +613,7 @@ function aplicarFiltros() {
         cumpleFiltros(
             fila, F,
             texto(fila.nombre_inspector),
-            obtenerFecha(fila.fecha_inspeccion),
+            fechaVivienda(fila),
             true
         )
     );
@@ -854,7 +889,7 @@ function actualizarRanking() {
 function actualizarMensual() {
     const valores = MESES.map((_, indice) =>
         datosFiltrados.filter(fila => {
-            const fecha = obtenerFecha(fila.fecha_inspeccion);
+            const fecha = fechaVivienda(fila);
             return inspeccionada(fila) && fecha &&
                 fecha.getMonth() === indice;
         }).length
