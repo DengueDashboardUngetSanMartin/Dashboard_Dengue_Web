@@ -645,7 +645,6 @@ function actualizarDashboard() {
     seguro("ranking", actualizarRanking);
     seguro("mensual", actualizarMensual);
     seguro("sector", actualizarSector);
-    seguro("inspector", actualizarInspector);
     seguro("localidad", actualizarLocalidad);
     seguro("tabla", actualizarTabla);
     seguro("mapa", actualizarMapa);

@@ -10,6 +10,35 @@
 
     <link rel="stylesheet" href="style.css?v=20261021e">
 
+    <!-- Fila inferior sin el gráfico por inspector: localidad + tabla -->
+    <style>
+        .dashboard-grid.third.sin-inspector {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+            gap: 12px;
+            align-items: stretch;
+        }
+        .dashboard-grid.third.sin-inspector > .panel {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+        .dashboard-grid.third.sin-inspector .chart-container {
+            flex: 1;
+            height: auto;
+            min-height: 560px;
+            position: relative;
+        }
+        @media (max-width: 1100px) {
+            .dashboard-grid.third.sin-inspector {
+                grid-template-columns: 1fr;
+            }
+            .dashboard-grid.third.sin-inspector .chart-container {
+                min-height: 380px;
+            }
+        }
+    </style>
+
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
@@ -596,40 +625,10 @@
 
 
     <!-- =====================================================
-         TERCERA FILA: INSPECTORES, LOCALIDADES Y TABLA
+         TERCERA FILA: LOCALIDADES Y TABLA
     ====================================================== -->
 
-    <section class="dashboard-grid third">
-
-        <!-- INSPECTORES -->
-        <div class="panel inspector-panel">
-
-            <div class="panel-title">
-                👤 Viviendas inspeccionadas por inspector
-            </div>
-
-            <div class="inspector-chart-controls">
-
-                <label for="inspectorChartLimit">
-                    Mostrar:
-                </label>
-
-                <select id="inspectorChartLimit">
-                    <option value="10" selected>Top 10</option>
-                    <option value="15">Top 15</option>
-                    <option value="all">Todos</option>
-                </select>
-
-            </div>
-
-            <div class="inspector-chart-scroll">
-                <div class="inspector-chart-inner">
-                    <canvas id="inspectorChart"></canvas>
-                </div>
-            </div>
-
-        </div>
-
+    <section class="dashboard-grid third sin-inspector">
 
         <!-- LOCALIDADES -->
         <div class="panel">
