@@ -166,19 +166,11 @@ async function cargarDatosCSV(esActualizacionAutomatica = false) {
 // ============================================================
 // La descarga de Dengue-Admin puede traer la misma vivienda en dos filas
 // (ej. ANA KELY 02/10/2026, Mz 309-F Jr. Apurimac Mz E Lote 2), aunque el
-// Formato 03 la muestre una sola vez. Se considera la misma vivienda si
-// coinciden: fecha y hora de registro + inspector + manzana + direccion +
-// condicion + tipo de actividad. Si una copia es "recuperada" se conserva esa.
+// Formato 03 la muestre una sola vez. Aqui solo se quitan filas identicas
+// en todas sus columnas; los re-registros se tratan en quitarReRegistros().
 function claveRegistroUnico(f) {
-    return [
-        texto(f.fecha_creacion) || texto(f.fecha_inspeccion),
-        texto(f.nombre_inspector).toUpperCase(),
-        texto(f.localidad_eess).toUpperCase(),
-        texto(f.codigo_manzana).toUpperCase(),
-        texto(f.direccion).toUpperCase().replace(/\s+/g, " "),
-        texto(f.atencion_vivienda_indicador),
-        texto(f.tipoActividadInspeccion).toUpperCase()
-    ].join("|");
+    // Fila identica en todas sus columnas.
+    return Object.keys(f).sort().map(k => k + "=" + texto(f[k])).join("|");
 }
 
 function quitarDuplicados(filas) {
@@ -216,17 +208,12 @@ function quitarDuplicados(filas) {
     return quitarReRegistros([...mapa.values()]);
 }
 
-// Re-registros: la misma vivienda registrada dos veces por el mismo
-// inspector con pocos minutos de diferencia (ej. 309-F de ANA KELY, 02/10:
-// 09:20 y 09:23). Dengue-Admin solo muestra la ultima; el CSV trae ambas.
-// Misma vivienda = mismo inspector + mismo dia + manzana + direccion
-// (sin espacios ni signos) + georreferencia + condicion + tipo, con
-// menos de MINUTOS_REREGISTRO entre una y otra. Se conserva la mas reciente.
-const MINUTOS_REREGISTRO = 30;
-
-function normalizarDireccion(valor) {
-    return texto(valor).toUpperCase().replace(/[^A-Z0-9]/g, "");
-}
+// Re-registros: el inspector registra una vivienda y luego la vuelve a
+// registrar corregida (ej. ANA KELY 02/10: 309-F "JR APRURIMAC" -> "JR APURIMAC",
+// 296 "JR / LOTE LIBRE" -> "JR IQUITOS / LOTE LIBRE"). Dengue-Admin (Formato 03)
+// muestra solo la ultima, pero su exportacion trae ambas. Se reconocen porque
+// tienen la MISMA jornada + manzana + coordenadas GPS exactas + condicion + tipo.
+// Se conserva la mas reciente. Validado: Morales 01-02/10 = 373 / 63 / 104.
 
 // obtenerFecha() descarta la hora; aqui se necesita la hora exacta.
 function marcaTiempoRegistro(f) {
@@ -239,59 +226,51 @@ function marcaTiempoRegistro(f) {
 }
 
 function quitarReRegistros(filas) {
-    const grupos = new Map();
-    const sinFecha = [];
+    const elegidos = new Map();
+    const sinGPS = [];
+    const quitados = [];
 
-    filas.forEach(f => {
-        const fecha = fechaVivienda(f);
-        const t = marcaTiempoRegistro(f);
-        if (!fecha || t === null) { sinFecha.push(f); return; }
+    filas.forEach((f, orden) => {
+        const x = texto(f.georeferencia_X), y = texto(f.georeferencia_Y);
+        const jornada = texto(f._uid) || texto(f._id_x);
+        if (!x || !y || !jornada) { sinGPS.push(f); return; }
 
         const clave = [
-            texto(f.nombre_inspector).toUpperCase(),
-            fechaLocalISO(fecha),
-            texto(f.localidad_eess).toUpperCase(),
+            jornada,
             texto(f.codigo_manzana).toUpperCase(),
-            normalizarDireccion(f.direccion),
-            texto(f.georeferencia_X),
-            texto(f.georeferencia_Y),
+            x, y,
             texto(f.atencion_vivienda_indicador),
             texto(f.tipoActividadInspeccion).toUpperCase()
         ].join("|");
 
-        if (!grupos.has(clave)) grupos.set(clave, []);
-        grupos.get(clave).push({ f, t });
-    });
+        const t = marcaTiempoRegistro(f);
+        const actual = { f, t: t === null ? -Infinity : t, orden };
+        const previo = elegidos.get(clave);
 
-    const resultado = [...sinFecha];
-    const quitados = [];
-    const limite = MINUTOS_REREGISTRO * 60 * 1000;
+        if (!previo) { elegidos.set(clave, actual); return; }
 
-    grupos.forEach(lista => {
-        lista.sort((a, b) => a.t - b.t);
-        for (let i = 0; i < lista.length; i++) {
-            const siguiente = lista[i + 1];
-            if (siguiente && siguiente.t - lista[i].t <= limite) {
-                quitados.push({ quitado: lista[i].f, conservado: siguiente.f });
-            } else {
-                resultado.push(lista[i].f);
-            }
+        const masReciente = (actual.t > previo.t) ||
+            (actual.t === previo.t && actual.orden > previo.orden);
+        if (masReciente) {
+            quitados.push({ quitado: previo.f, conservado: f });
+            elegidos.set(clave, actual);
+        } else {
+            quitados.push({ quitado: f, conservado: previo.f });
         }
     });
 
     if (quitados.length) {
-        console.warn("Re-registros eliminados (se conserva el mas reciente):", quitados.length);
+        console.warn("Re-registros eliminados (misma jornada + manzana + GPS):", quitados.length);
         console.table(quitados.map(q => ({
             inspector: texto(q.quitado.nombre_inspector),
             localidad: texto(q.quitado.localidad_eess),
             manzana: texto(q.quitado.codigo_manzana),
-            direccion: texto(q.quitado.direccion),
-            quitado: texto(q.quitado.fecha_creacion),
-            conservado: texto(q.conservado.fecha_creacion)
+            quitado: texto(q.quitado.direccion),
+            conservado: texto(q.conservado.direccion)
         })));
     }
 
-    return resultado;
+    return [...sinGPS, ...[...elegidos.values()].map(e => e.f)];
 }
 
 // ============================================================
