@@ -1599,27 +1599,51 @@ function direccionJefeFamilia(fila) {
     return texto(fila.direccion) + " / /" + familia;
 }
 
+// "SECTOR 3", "03" o "3" -> 3 (sin numero: se deja el texto y va al final).
+function numeroSector(valor) {
+    const m = texto(valor).match(/\d+/);
+    return m ? Number(m[0]) : Number.MAX_SAFE_INTEGER;
+}
+
+function sectorParaFormato(valor) {
+    const n = numeroSector(valor);
+    return n === Number.MAX_SAFE_INTEGER ? texto(valor) : n;
+}
+
+function compararTexto(a, b) {
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+
+function tituloLocalidad(valor) {
+    return nombrePropio(valor).replace(/ (De|Del|La|Las|Los|Y) /g, m => m.toLowerCase());
+}
+
 function filasLecturaMuestras() {
     const filas = [];
+    const casaDeFila = []; // a que vivienda pertenece cada fila (para colorear)
 
+    // Orden: localidad > sector > inspector > fecha > manzana > direccion.
     obtenerDatosParaDescarga()
         .filter(viviendaPositiva)
         .sort((a, b) =>
-            texto(a.fecha_inspeccion).slice(0, 10).localeCompare(texto(b.fecha_inspeccion).slice(0, 10)) ||
-            texto(a.localidad_eess).localeCompare(texto(b.localidad_eess)) ||
-            (numero(a.sector) - numero(b.sector)) ||
+            compararTexto(texto(a.localidad_eess), texto(b.localidad_eess)) ||
+            (numeroSector(a.sector) - numeroSector(b.sector)) ||
+            compararTexto(texto(a.nombre_inspector), texto(b.nombre_inspector)) ||
+            compararTexto(texto(a.fecha_inspeccion).slice(0, 10), texto(b.fecha_inspeccion).slice(0, 10)) ||
             (numero(a.codigo_manzana) - numero(b.codigo_manzana)) ||
-            texto(a.direccion).localeCompare(texto(b.direccion))
+            compararTexto(texto(a.codigo_manzana), texto(b.codigo_manzana)) ||
+            compararTexto(texto(a.direccion), texto(b.direccion))
         )
-        .forEach(fila => {
+        .forEach((fila, indiceCasa) => {
             CODIGOS_CRIADERO_POSITIVO.forEach(([campo, codigo]) => {
                 const cantidad = Math.floor(Math.max(0, numero(fila[campo])));
                 for (let i = 0; i < cantidad; i++) {
+                    casaDeFila.push(indiceCasa);
                     filas.push([
                         filas.length + 1,
                         nombrePropio(fila.distrito),
                         nombrePropio(fila.localidad_eess),
-                        valorNumeroOTexto(fila.sector),
+                        sectorParaFormato(fila.sector),
                         fechaExcel(fila.fecha_inspeccion),
                         valorNumeroOTexto(fila.codigo_manzana),
                         direccionJefeFamilia(fila),
@@ -1631,6 +1655,7 @@ function filasLecturaMuestras() {
             });
         });
 
+    filas.casa = casaDeFila;
     return filas;
 }
 
@@ -1648,13 +1673,13 @@ function descargarPositivos() {
 
         hoja.columns = [
             { width: 6 }, { width: 14 }, { width: 22 }, { width: 9 },
-            { width: 12 }, { width: 8 }, { width: 58 }, { width: 36 },
+            { width: 12 }, { width: 8 }, { width: 40 }, { width: 36 },
             { width: 7 }, { width: 5 }, { width: 5 }, { width: 5 },
             { width: 10 }, { width: 9 }
         ];
 
-        const distritos = [...new Set(filas.map(f => f[1]).filter(Boolean))];
-        const subtitulo = (distritos.length === 1 ? distritos[0] + " - " : "") +
+        const localidades = [...new Set(filas.map(f => f[2]).filter(Boolean))];
+        const subtitulo = (localidades.length === 1 ? tituloLocalidad(localidades[0]) + " - " : "") +
             "Vigilancia Entomológicas";
 
         const borde = {
@@ -1686,8 +1711,32 @@ function descargarPositivos() {
             celda.border = borde;
         });
 
-        filas.forEach(valores => {
+        // Viviendas con 2 o mas criaderos: mismo color de fondo (columnas A-I),
+        // rotando colores para que dos casas seguidas no se confundan.
+        const COLORES_CASA = [
+            "FFD9D9D9", "FFDDEBF7", "FFFCE4D6", "FFE2EFDA", "FFFFF2CC",
+            "FFE4DFEC", "FFC6E0B4", "FFF8CBAD", "FFBDD7EE", "FFFFE699"
+        ];
+        const filasPorCasa = {};
+        filas.casa.forEach(c => { filasPorCasa[c] = (filasPorCasa[c] || 0) + 1; });
+        const colorDeCasa = {};
+        let siguienteColor = 0;
+
+        filas.forEach((valores, idx) => {
             const r = hoja.addRow(valores);
+            const casa = filas.casa[idx];
+            if (filasPorCasa[casa] > 1) {
+                if (!(casa in colorDeCasa)) {
+                    colorDeCasa[casa] = COLORES_CASA[siguienteColor % COLORES_CASA.length];
+                    siguienteColor++;
+                }
+                for (let c = 1; c <= 9; c++) {
+                    r.getCell(c).fill = {
+                        type: "pattern", pattern: "solid",
+                        fgColor: { argb: colorDeCasa[casa] }
+                    };
+                }
+            }
             for (let c = 1; c <= 14; c++) {
                 const celda = r.getCell(c);
                 celda.border = borde;
