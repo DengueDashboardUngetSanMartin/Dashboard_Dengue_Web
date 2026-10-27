@@ -209,11 +209,37 @@ function quitarDuplicados(filas) {
 }
 
 // Re-registros: el inspector registra una vivienda y luego la vuelve a
-// registrar corregida (ej. ANA KELY 02/10: 309-F "JR APRURIMAC" -> "JR APURIMAC",
-// 296 "JR / LOTE LIBRE" -> "JR IQUITOS / LOTE LIBRE"). Dengue-Admin (Formato 03)
-// muestra solo la ultima, pero su exportacion trae ambas. Se reconocen porque
-// tienen la MISMA jornada + manzana + coordenadas GPS exactas + condicion + tipo.
-// Se conserva la mas reciente. Validado: Morales 01-02/10 = 373 / 63 / 104.
+// registrar corregida (ej. ANA KELY 02/10: 309-F "JR APRURIMAC MZ E LOTE 2" ->
+// "JR APURIMAC MZ E LOTE 2"; 296 "JR / LOTE LIBRE" -> "JR IQUITOS / LOTE LIBRE").
+// Dengue-Admin muestra solo la ultima, pero su exportacion trae ambas.
+// Es la misma vivienda si coinciden jornada + manzana + GPS exacto + condicion
+// + tipo, Y ADEMAS la direccion es compatible:
+//   - con numeros: los mismos numeros (369 vs 340 = casas distintas, aunque
+//     el GPS sea igual: ERICKA 17/09 Nueve de Abril, Mz 17);
+//   - sin numeros: las palabras de una estan todas contenidas en la otra.
+// Se conserva la mas reciente. Validado contra Formato 03:
+//   Morales 01-02/10 = 373 / 63 / 104 ; Nueve de Abril 17-19/09 = 358 / 75 / 124.
+
+function numerosDireccion(valor) {
+    return [...new Set(texto(valor).match(/\d+/g) || [])]
+        .map(n => String(Number(n))).sort().join(",");
+}
+
+function palabrasDireccion(valor) {
+    return new Set(
+        texto(valor).toUpperCase()
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+            .split(/[^A-Z0-9]+/).filter(Boolean)
+    );
+}
+
+function mismaDireccion(a, b) {
+    // Llamada solo con los mismos numeros (son parte de la clave).
+    if (numerosDireccion(a)) return true;
+    const pa = palabrasDireccion(a), pb = palabrasDireccion(b);
+    const [menor, mayor] = pa.size <= pb.size ? [pa, pb] : [pb, pa];
+    return [...menor].every(w => mayor.has(w));
+}
 
 // obtenerFecha() descarta la hora; aqui se necesita la hora exacta.
 function marcaTiempoRegistro(f) {
@@ -226,41 +252,50 @@ function marcaTiempoRegistro(f) {
 }
 
 function quitarReRegistros(filas) {
-    const elegidos = new Map();
-    const sinGPS = [];
+    const grupos = new Map();
+    const resultado = [];
     const quitados = [];
 
     filas.forEach((f, orden) => {
         const x = texto(f.georeferencia_X), y = texto(f.georeferencia_Y);
         const jornada = texto(f._uid) || texto(f._id_x);
-        if (!x || !y || !jornada) { sinGPS.push(f); return; }
+        if (!x || !y || !jornada) { resultado.push(f); return; }
 
         const clave = [
             jornada,
             texto(f.codigo_manzana).toUpperCase(),
             x, y,
             texto(f.atencion_vivienda_indicador),
-            texto(f.tipoActividadInspeccion).toUpperCase()
+            texto(f.tipoActividadInspeccion).toUpperCase(),
+            numerosDireccion(f.direccion)
         ].join("|");
 
         const t = marcaTiempoRegistro(f);
-        const actual = { f, t: t === null ? -Infinity : t, orden };
-        const previo = elegidos.get(clave);
+        if (!grupos.has(clave)) grupos.set(clave, []);
+        grupos.get(clave).push({ f, t: t === null ? -Infinity : t, orden });
+    });
 
-        if (!previo) { elegidos.set(clave, actual); return; }
+    grupos.forEach(lista => {
+        if (lista.length === 1) { resultado.push(lista[0].f); return; }
 
-        const masReciente = (actual.t > previo.t) ||
-            (actual.t === previo.t && actual.orden > previo.orden);
-        if (masReciente) {
-            quitados.push({ quitado: previo.f, conservado: f });
-            elegidos.set(clave, actual);
-        } else {
-            quitados.push({ quitado: f, conservado: previo.f });
-        }
+        // Del mas antiguo al mas reciente; cada registro reemplaza a una
+        // version anterior compatible de la misma vivienda.
+        lista.sort((a, b) => (a.t - b.t) || (a.orden - b.orden));
+        const casas = [];
+        lista.forEach(reg => {
+            const i = casas.findIndex(c => mismaDireccion(c.f.direccion, reg.f.direccion));
+            if (i === -1) {
+                casas.push(reg);
+            } else {
+                quitados.push({ quitado: casas[i].f, conservado: reg.f });
+                casas[i] = reg;
+            }
+        });
+        casas.forEach(c => resultado.push(c.f));
     });
 
     if (quitados.length) {
-        console.warn("Re-registros eliminados (misma jornada + manzana + GPS):", quitados.length);
+        console.warn("Re-registros eliminados (misma jornada + manzana + GPS + direccion):", quitados.length);
         console.table(quitados.map(q => ({
             inspector: texto(q.quitado.nombre_inspector),
             localidad: texto(q.quitado.localidad_eess),
@@ -270,7 +305,7 @@ function quitarReRegistros(filas) {
         })));
     }
 
-    return [...sinGPS, ...[...elegidos.values()].map(e => e.f)];
+    return resultado;
 }
 
 // ============================================================
