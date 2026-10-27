@@ -144,7 +144,7 @@ async function cargarDatosCSV(esActualizacionAutomatica = false) {
                 return;
             }
 
-            datosOriginales = registros;
+            datosOriginales = quitarDuplicados(registros);
             mapaDniInspector = null;
             ultimaCargaCSV = Date.now();
 
@@ -159,6 +159,139 @@ async function cargarDatosCSV(esActualizacionAutomatica = false) {
             seguro("actualizarDashboard", actualizarDashboard);
         }
     });
+}
+
+// ============================================================
+// QUITAR REGISTROS DUPLICADOS DEL CSV
+// ============================================================
+// La descarga de Dengue-Admin puede traer la misma vivienda en dos filas
+// (ej. ANA KELY 02/10/2026, Mz 309-F Jr. Apurimac Mz E Lote 2), aunque el
+// Formato 03 la muestre una sola vez. Se considera la misma vivienda si
+// coinciden: fecha y hora de registro + inspector + manzana + direccion +
+// condicion + tipo de actividad. Si una copia es "recuperada" se conserva esa.
+function claveRegistroUnico(f) {
+    return [
+        texto(f.fecha_creacion) || texto(f.fecha_inspeccion),
+        texto(f.nombre_inspector).toUpperCase(),
+        texto(f.localidad_eess).toUpperCase(),
+        texto(f.codigo_manzana).toUpperCase(),
+        texto(f.direccion).toUpperCase().replace(/\s+/g, " "),
+        texto(f.atencion_vivienda_indicador),
+        texto(f.tipoActividadInspeccion).toUpperCase()
+    ].join("|");
+}
+
+function quitarDuplicados(filas) {
+    const mapa = new Map();
+    const duplicados = [];
+
+    filas.forEach(f => {
+        const clave = claveRegistroUnico(f);
+        const existente = mapa.get(clave);
+
+        if (!existente) {
+            mapa.set(clave, f);
+            return;
+        }
+
+        duplicados.push(f);
+        // Conservar la copia que tenga datos de recuperacion.
+        if (numero(f.recuperada) === 1 && numero(existente.recuperada) !== 1) {
+            mapa.set(clave, f);
+        }
+    });
+
+    if (duplicados.length) {
+        console.warn("Registros duplicados eliminados:", duplicados.length);
+        console.table(duplicados.map(f => ({
+            fecha: texto(f.fecha_creacion) || texto(f.fecha_inspeccion),
+            inspector: texto(f.nombre_inspector),
+            localidad: texto(f.localidad_eess),
+            sector: texto(f.sector),
+            manzana: texto(f.codigo_manzana),
+            direccion: texto(f.direccion)
+        })));
+    }
+
+    return quitarReRegistros([...mapa.values()]);
+}
+
+// Re-registros: la misma vivienda registrada dos veces por el mismo
+// inspector con pocos minutos de diferencia (ej. 309-F de ANA KELY, 02/10:
+// 09:20 y 09:23). Dengue-Admin solo muestra la ultima; el CSV trae ambas.
+// Misma vivienda = mismo inspector + mismo dia + manzana + direccion
+// (sin espacios ni signos) + georreferencia + condicion + tipo, con
+// menos de MINUTOS_REREGISTRO entre una y otra. Se conserva la mas reciente.
+const MINUTOS_REREGISTRO = 30;
+
+function normalizarDireccion(valor) {
+    return texto(valor).toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+// obtenerFecha() descarta la hora; aqui se necesita la hora exacta.
+function marcaTiempoRegistro(f) {
+    const v = texto(f.fecha_creacion) || texto(f._createdAt_y) || texto(f.fecha_inspeccion);
+    let m = v.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if (m) return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)).getTime();
+    m = v.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+    if (m) return new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5], +(m[6] || 0)).getTime();
+    return null; // sin hora: no se puede saber si es re-registro
+}
+
+function quitarReRegistros(filas) {
+    const grupos = new Map();
+    const sinFecha = [];
+
+    filas.forEach(f => {
+        const fecha = fechaVivienda(f);
+        const t = marcaTiempoRegistro(f);
+        if (!fecha || t === null) { sinFecha.push(f); return; }
+
+        const clave = [
+            texto(f.nombre_inspector).toUpperCase(),
+            fechaLocalISO(fecha),
+            texto(f.localidad_eess).toUpperCase(),
+            texto(f.codigo_manzana).toUpperCase(),
+            normalizarDireccion(f.direccion),
+            texto(f.georeferencia_X),
+            texto(f.georeferencia_Y),
+            texto(f.atencion_vivienda_indicador),
+            texto(f.tipoActividadInspeccion).toUpperCase()
+        ].join("|");
+
+        if (!grupos.has(clave)) grupos.set(clave, []);
+        grupos.get(clave).push({ f, t });
+    });
+
+    const resultado = [...sinFecha];
+    const quitados = [];
+    const limite = MINUTOS_REREGISTRO * 60 * 1000;
+
+    grupos.forEach(lista => {
+        lista.sort((a, b) => a.t - b.t);
+        for (let i = 0; i < lista.length; i++) {
+            const siguiente = lista[i + 1];
+            if (siguiente && siguiente.t - lista[i].t <= limite) {
+                quitados.push({ quitado: lista[i].f, conservado: siguiente.f });
+            } else {
+                resultado.push(lista[i].f);
+            }
+        }
+    });
+
+    if (quitados.length) {
+        console.warn("Re-registros eliminados (se conserva el mas reciente):", quitados.length);
+        console.table(quitados.map(q => ({
+            inspector: texto(q.quitado.nombre_inspector),
+            localidad: texto(q.quitado.localidad_eess),
+            manzana: texto(q.quitado.codigo_manzana),
+            direccion: texto(q.quitado.direccion),
+            quitado: texto(q.quitado.fecha_creacion),
+            conservado: texto(q.conservado.fecha_creacion)
+        })));
+    }
+
+    return resultado;
 }
 
 // ============================================================
@@ -178,9 +311,9 @@ function seguro(nombre, fn) {
 // ============================================================
 
 function procesarDatos(datos) {
-    datosOriginales = (datos || []).filter(
+    datosOriginales = quitarDuplicados((datos || []).filter(
         fila => fila && Object.keys(fila).length > 1
-    );
+    ));
 
     datosFiltrados = [...datosOriginales];
 
