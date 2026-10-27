@@ -144,7 +144,7 @@ async function cargarDatosCSV(esActualizacionAutomatica = false) {
                 return;
             }
 
-            datosOriginales = registros;
+            datosOriginales = quitarDuplicados(registros);
             mapaDniInspector = null;
             ultimaCargaCSV = Date.now();
 
@@ -159,6 +159,61 @@ async function cargarDatosCSV(esActualizacionAutomatica = false) {
             seguro("actualizarDashboard", actualizarDashboard);
         }
     });
+}
+
+// ============================================================
+// QUITAR REGISTROS DUPLICADOS DEL CSV
+// ============================================================
+// La descarga de Dengue-Admin puede traer la misma vivienda en dos filas
+// (ej. ANA KELY 02/10/2026, Mz 309-F Jr. Apurimac Mz E Lote 2), aunque el
+// Formato 03 la muestre una sola vez. Se considera la misma vivienda si
+// coinciden: fecha y hora de registro + inspector + manzana + direccion +
+// condicion + tipo de actividad. Si una copia es "recuperada" se conserva esa.
+function claveRegistroUnico(f) {
+    return [
+        texto(f.fecha_creacion) || texto(f.fecha_inspeccion),
+        texto(f.nombre_inspector).toUpperCase(),
+        texto(f.localidad_eess).toUpperCase(),
+        texto(f.codigo_manzana).toUpperCase(),
+        texto(f.direccion).toUpperCase().replace(/\s+/g, " "),
+        texto(f.atencion_vivienda_indicador),
+        texto(f.tipoActividadInspeccion).toUpperCase()
+    ].join("|");
+}
+
+function quitarDuplicados(filas) {
+    const mapa = new Map();
+    const duplicados = [];
+
+    filas.forEach(f => {
+        const clave = claveRegistroUnico(f);
+        const existente = mapa.get(clave);
+
+        if (!existente) {
+            mapa.set(clave, f);
+            return;
+        }
+
+        duplicados.push(f);
+        // Conservar la copia que tenga datos de recuperacion.
+        if (numero(f.recuperada) === 1 && numero(existente.recuperada) !== 1) {
+            mapa.set(clave, f);
+        }
+    });
+
+    if (duplicados.length) {
+        console.warn("Registros duplicados eliminados:", duplicados.length);
+        console.table(duplicados.map(f => ({
+            fecha: texto(f.fecha_creacion) || texto(f.fecha_inspeccion),
+            inspector: texto(f.nombre_inspector),
+            localidad: texto(f.localidad_eess),
+            sector: texto(f.sector),
+            manzana: texto(f.codigo_manzana),
+            direccion: texto(f.direccion)
+        })));
+    }
+
+    return [...mapa.values()];
 }
 
 // ============================================================
@@ -178,9 +233,9 @@ function seguro(nombre, fn) {
 // ============================================================
 
 function procesarDatos(datos) {
-    datosOriginales = (datos || []).filter(
+    datosOriginales = quitarDuplicados((datos || []).filter(
         fila => fila && Object.keys(fila).length > 1
-    );
+    ));
 
     datosFiltrados = [...datosOriginales];
 
