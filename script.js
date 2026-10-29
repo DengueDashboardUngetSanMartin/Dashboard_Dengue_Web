@@ -31,7 +31,6 @@ let ultimaCargaCSV = 0;
 let fechaArchivoCSV = null; // Last-Modified del datos.csv(.gz) publicado
 let firmaArchivoCSV = null; // ETag/Last-Modified de la última base procesada
 let esPrimeraCarga = true;
-let camposCSV = null; // columnas del CSV (mismo orden en todas las filas)
 
 // ============================================================
 // INICIO
@@ -171,7 +170,6 @@ async function cargarDatosCSV(esActualizacionAutomatica = false) {
                 return;
             }
 
-            camposCSV = (resultado.meta && resultado.meta.fields) || null;
             datosOriginales = quitarDuplicados(registros);
             mapaDniInspector = null;
             cacheInspectorRec = new WeakMap();
@@ -198,13 +196,25 @@ async function cargarDatosCSV(esActualizacionAutomatica = false) {
 // (ej. ANA KELY 02/10/2026, Mz 309-F Jr. Apurimac Mz E Lote 2), aunque el
 // Formato 03 la muestre una sola vez. Aqui solo se quitan filas identicas
 // en todas sus columnas; los re-registros se tratan en quitarReRegistros().
+// Orden de columnas ya calculado, por cada conjunto de columnas distinto
+// (normalmente uno solo para todo el CSV).
+const cacheColumnasOrdenadas = new Map();
+
 function claveRegistroUnico(f) {
-    // Fila identica en todas sus columnas. Papa Parse entrega todas las filas
-    // con las mismas columnas, asi que basta unir los valores en ese orden.
-    const campos = camposCSV || Object.keys(f);
+    // Fila identica en todas sus columnas. Misma clave que la version
+    // original (columnas ordenadas, "columna=valor" unidos con "|"),
+    // pero sin ordenar las columnas de nuevo en cada fila.
+    const columnas = Object.keys(f);
+    const firma = columnas.join("\u0002");
+    let ordenadas = cacheColumnasOrdenadas.get(firma);
+    if (!ordenadas) {
+        ordenadas = [...columnas].sort();
+        cacheColumnasOrdenadas.set(firma, ordenadas);
+    }
     let clave = "";
-    for (let i = 0; i < campos.length; i++) {
-        clave += texto(f[campos[i]]) + "\u0001";
+    for (let i = 0; i < ordenadas.length; i++) {
+        if (i) clave += "|";
+        clave += ordenadas[i] + "=" + texto(f[ordenadas[i]]);
     }
     return clave;
 }
