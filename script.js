@@ -1354,11 +1354,11 @@ function inicializarMapa() {
     // preferCanvas: dibuja los puntos en un solo lienzo (más rápido).
     mapa = L.map("map", { preferCanvas: true }).setView([-6.4869, -76.3625], 11);
 
-    // Mismo estilo de mapa base que Dengue-Admin (CARTO Voyager).
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+    // Mapa base de OpenStreetMap (libre, sin clave). CARTO ahora exige
+    // API key y muestra "API KEY REQUIRED" en lugar del mapa.
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19,
-        subdomains: "abcd",
-        attribution: "© OpenStreetMap © CARTO"
+        attribution: "© OpenStreetMap"
     }).addTo(mapa);
 
     capaMarcadores = (typeof L.markerClusterGroup === "function")
