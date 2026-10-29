@@ -11,6 +11,7 @@ let mapaDniInspector = null;
 let charts = {};
 let mapa = null;
 let marcadores = [];
+let capaMarcadores = null;
 let busquedaInspector = "";
 
 const ARCHIVO_CSV = "datos.csv.gz";
@@ -28,6 +29,9 @@ let dashboardIniciado = false;
 let temporizadorCSV = null;
 let ultimaCargaCSV = 0;
 let fechaArchivoCSV = null; // Last-Modified del datos.csv(.gz) publicado
+let firmaArchivoCSV = null; // ETag/Last-Modified de la última base procesada
+let esPrimeraCarga = true;
+let camposCSV = null; // columnas del CSV (mismo orden en todas las filas)
 
 // ============================================================
 // INICIO
@@ -66,11 +70,11 @@ if (document.readyState === "loading") {
 // Descarga datos.csv.gz y lo descomprime en el navegador.
 // Si no existe el .gz (o el navegador es antiguo), usa datos.csv como respaldo.
 async function leerTextoCSV() {
-    const version = "?v=" + Date.now();
-
+    // "no-cache" = usar la copia guardada en el navegador, pero preguntando
+    // antes a GitHub si cambió (ETag). Si no cambió, no se vuelve a descargar.
     if (typeof DecompressionStream !== "undefined") {
-        const urlGz = new URL(ARCHIVO_CSV, window.location.href).href + version;
-        const resp = await fetch(urlGz, { cache: "no-store" });
+        const urlGz = new URL(ARCHIVO_CSV, window.location.href).href;
+        const resp = await fetch(urlGz, { cache: "no-cache" });
 
         if (resp.ok) {
             guardarFechaArchivo(resp);
@@ -90,14 +94,34 @@ async function leerTextoCSV() {
     }
 
     // Respaldo: CSV sin comprimir.
-    const urlCsv = new URL(ARCHIVO_CSV_RESPALDO, window.location.href).href + version;
-    const resp2 = await fetch(urlCsv, { cache: "no-store" });
+    const urlCsv = new URL(ARCHIVO_CSV_RESPALDO, window.location.href).href;
+    const resp2 = await fetch(urlCsv, { cache: "no-cache" });
     if (!resp2.ok) throw new Error("No se encontró datos.csv.gz ni datos.csv");
     guardarFechaArchivo(resp2);
     return await resp2.text();
 }
 
+function firmaRespuesta(resp) {
+    return resp.headers.get("etag") || resp.headers.get("last-modified") ||
+        resp.headers.get("content-length") || null;
+}
+
+// Consulta liviana (solo encabezados) para saber si la base publicada cambió.
+async function baseCambio() {
+    if (!firmaArchivoCSV) return true;
+    try {
+        const url = new URL(ARCHIVO_CSV, window.location.href).href;
+        const resp = await fetch(url, { method: "HEAD", cache: "no-cache" });
+        if (!resp.ok) return true;
+        const firma = firmaRespuesta(resp);
+        return !firma || firma !== firmaArchivoCSV;
+    } catch (e) {
+        return false; // sin conexión: conservar lo que ya está en pantalla
+    }
+}
+
 function guardarFechaArchivo(resp) {
+    firmaArchivoCSV = firmaRespuesta(resp);
     const lm = resp.headers.get("last-modified");
     const f = lm ? new Date(lm) : null;
     fechaArchivoCSV = f && !Number.isNaN(f.getTime()) ? f : null;
@@ -110,6 +134,9 @@ async function cargarDatosCSV(esActualizacionAutomatica = false) {
         fijarTextoFecha("Error", "No se cargó la librería Papa Parse");
         return;
     }
+
+    // Actualización automática: solo se reprocesa si se publicó una base nueva.
+    if (esActualizacionAutomatica && !(await baseCambio())) return;
 
     let textoCSV;
     try {
@@ -144,15 +171,18 @@ async function cargarDatosCSV(esActualizacionAutomatica = false) {
                 return;
             }
 
+            camposCSV = (resultado.meta && resultado.meta.fields) || null;
             datosOriginales = quitarDuplicados(registros);
             mapaDniInspector = null;
+            cacheInspectorRec = new WeakMap();
             ultimaCargaCSV = Date.now();
 
             console.log("CSV cargado:", datosOriginales.length, "registros");
             console.log("Columnas:", Object.keys(datosOriginales[0]));
 
             // Actualiza los filtros conservando las selecciones existentes.
-            inicializarFiltros();
+            inicializarFiltros(esPrimeraCarga);
+            esPrimeraCarga = false;
 
             seguro("actualizarFecha", actualizarFecha);
             seguro("inicializarMapa", inicializarMapa);
@@ -169,8 +199,14 @@ async function cargarDatosCSV(esActualizacionAutomatica = false) {
 // Formato 03 la muestre una sola vez. Aqui solo se quitan filas identicas
 // en todas sus columnas; los re-registros se tratan en quitarReRegistros().
 function claveRegistroUnico(f) {
-    // Fila identica en todas sus columnas.
-    return Object.keys(f).sort().map(k => k + "=" + texto(f[k])).join("|");
+    // Fila identica en todas sus columnas. Papa Parse entrega todas las filas
+    // con las mismas columnas, asi que basta unir los valores en ese orden.
+    const campos = camposCSV || Object.keys(f);
+    let clave = "";
+    for (let i = 0; i < campos.length; i++) {
+        clave += texto(f[campos[i]]) + "\u0001";
+    }
+    return clave;
 }
 
 function quitarDuplicados(filas) {
@@ -195,7 +231,7 @@ function quitarDuplicados(filas) {
 
     if (duplicados.length) {
         console.warn("Registros duplicados eliminados:", duplicados.length);
-        console.table(duplicados.map(f => ({
+        console.table(duplicados.slice(0, 30).map(f => ({
             fecha: texto(f.fecha_creacion) || texto(f.fecha_inspeccion),
             inspector: texto(f.nombre_inspector),
             localidad: texto(f.localidad_eess),
@@ -296,7 +332,7 @@ function quitarReRegistros(filas) {
 
     if (quitados.length) {
         console.warn("Re-registros eliminados (misma jornada + manzana + GPS + direccion):", quitados.length);
-        console.table(quitados.map(q => ({
+        console.table(quitados.slice(0, 30).map(q => ({
             inspector: texto(q.quitado.nombre_inspector),
             localidad: texto(q.quitado.localidad_eess),
             manzana: texto(q.quitado.codigo_manzana),
@@ -409,7 +445,28 @@ function construirMapaDni() {
     });
 }
 
+// ------------------------------------------------------------
+// Caché por fila: fechas, inspector de recuperación y recipientes
+// positivos se calculan una sola vez por fila, no en cada filtro y gráfico.
+// (WeakMap: no agrega columnas a las filas ni a las descargas.)
+// ------------------------------------------------------------
+let cacheFechaVivienda = new WeakMap();
+let cacheFechaRecuperacion = new WeakMap();
+let cacheInspectorRec = new WeakMap();
+let cacheRecipientesPos = new WeakMap();
+
+function memo(cache, f, calcular) {
+    if (cache.has(f)) return cache.get(f);
+    const v = calcular(f);
+    cache.set(f, v);
+    return v;
+}
+
 function inspectorRecuperacion(f) {
+    return memo(cacheInspectorRec, f, inspectorRecuperacionCalc);
+}
+
+function inspectorRecuperacionCalc(f) {
     if (!mapaDniInspector) construirMapaDni();
     const dni = texto(f.recuperacion_usuario_asignado);
     return mapaDniInspector[dni] || texto(f.nombre_inspector);
@@ -419,10 +476,18 @@ function inspectorRecuperacion(f) {
 // registró la vivienda (fecha_creacion), no por el inicio de la jornada
 // (fecha_inspeccion). Si falta fecha_creacion se usa fecha_inspeccion.
 function fechaVivienda(f) {
+    return memo(cacheFechaVivienda, f, fechaViviendaCalc);
+}
+
+function fechaViviendaCalc(f) {
     return obtenerFecha(f.fecha_creacion) || obtenerFecha(f.fecha_inspeccion);
 }
 
 function fechaRecuperacion(f) {
+    return memo(cacheFechaRecuperacion, f, fechaRecuperacionCalc);
+}
+
+function fechaRecuperacionCalc(f) {
     return obtenerFecha(f.recuperacion_fecha) || obtenerFecha(f.fecha_inspeccion);
 }
 
@@ -444,6 +509,10 @@ const CAMPOS_RECIPIENTES_POSITIVOS = [
 ];
 
 function cantidadRecipientesPositivos(f) {
+    return memo(cacheRecipientesPos, f, cantidadRecipientesPositivosCalc);
+}
+
+function cantidadRecipientesPositivosCalc(f) {
     return CAMPOS_RECIPIENTES_POSITIVOS.reduce(
         (total, campo) => total + Math.max(0, numero(f[campo])),
         0
@@ -657,7 +726,7 @@ function llenarSelect(id, valores, inicial) {
 }
 
 
-function inicializarFiltros() {
+function inicializarFiltros(primeraCarga = true) {
     llenarSelect("filtroLocalidad", valoresUnicos("localidad_eess"), "Todas");
     llenarSelect("filtroInspector", valoresUnicos("nombre_inspector"), "Todos");
     llenarSelect("filtroSector", valoresUnicos("sector"), "Todos");
@@ -669,8 +738,11 @@ function inicializarFiltros() {
     const fechaInicio = document.getElementById("fechaInicio");
     const fechaFin = document.getElementById("fechaFin");
 
-    if (fechaInicio) fechaInicio.value = "";
-    if (fechaFin) fechaFin.value = "";
+    // En las actualizaciones automáticas se respeta el rango elegido.
+    if (primeraCarga) {
+        if (fechaInicio) fechaInicio.value = "";
+        if (fechaFin) fechaFin.value = "";
+    }
 
     configurarRangoFechas();
 
@@ -1033,13 +1105,13 @@ function actualizarRanking() {
 }
 
 function actualizarMensual() {
-    const valores = MESES.map((_, indice) =>
-        datosFiltrados.filter(fila => {
-            const fecha = fechaVivienda(fila);
-            return inspeccionada(fila) && fecha &&
-                fecha.getMonth() === indice;
-        }).length
-    );
+    // Una sola pasada por los datos (antes eran 12, una por mes).
+    const valores = MESES.map(() => 0);
+    datosFiltrados.forEach(fila => {
+        if (!inspeccionada(fila)) return;
+        const fecha = fechaVivienda(fila);
+        if (fecha) valores[fecha.getMonth()]++;
+    });
 
     graficoBarras(
         "monthlyChart", MESES, valores,
@@ -1185,7 +1257,10 @@ function inicializarMapa() {
 
     if (!elemento || typeof L === "undefined" || mapa) return;
 
-    mapa = L.map("map").setView([-6.4869, -76.3625], 11);
+    // preferCanvas: dibuja los puntos en un solo lienzo (mucho más rápido
+    // que 1500 elementos SVG sueltos).
+    mapa = L.map("map", { preferCanvas: true }).setView([-6.4869, -76.3625], 11);
+    capaMarcadores = L.layerGroup().addTo(mapa);
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         attribution: "&copy; OpenStreetMap"
@@ -1195,7 +1270,7 @@ function inicializarMapa() {
 function actualizarMapa() {
     if (!mapa) return;
 
-    marcadores.forEach(m => mapa.removeLayer(m));
+    if (capaMarcadores) capaMarcadores.clearLayers();
     marcadores = [];
 
     let contador = 0;
@@ -1220,7 +1295,7 @@ function actualizarMapa() {
             "📍 " + texto(fila.localidad_eess) + "<br>" +
             "🏠 " + texto(fila.direccion) + "<br>" +
             "👤 " + texto(fila.nombre_inspector)
-        ).addTo(mapa);
+        ).addTo(capaMarcadores || mapa);
 
         marcadores.push(marcador);
         contador++;
