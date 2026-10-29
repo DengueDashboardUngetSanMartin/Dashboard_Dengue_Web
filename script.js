@@ -279,9 +279,82 @@ function palabrasDireccion(valor) {
     );
 }
 
+// ------------------------------------------------------------
+// Comparacion de direcciones con el MISMO numero (re-registros)
+// ------------------------------------------------------------
+// Mismo numero no basta para decir que es la misma casa. Ademas:
+//  - la calle debe coincidir, admitiendo errores de tipeo
+//    (APRURIMAC/APURIMAC, CAWIDE/CAHUIDE, SAN MARTIN786/SAN MARTIN 786);
+//  - si ambas indican letra de interior/lote y no coinciden (A vs B),
+//    son casas distintas.
+// Caso real: PUNTA DEL ESTE 29/09, Mz 266, mismo GPS: JR PEDRO DE URZUA 345
+// y JR CAHUIDE 345 son dos viviendas (Formato de encuesta: zona 6 = 36).
+const PALABRAS_GENERICAS = new Set([
+    "JR", "JIRON", "AV", "AVENIDA", "CALLE", "CA", "PSJ", "PSJE", "PJE", "PASAJE",
+    "CARRETERA", "CARRT", "CARR", "PROLONGACION", "PROLOGACION", "PROLG", "PROL",
+    "MZ", "MZA", "MANZANA", "LT", "LOT", "LOTE", "SN", "NRO", "NUM", "NO",
+    "INTERIOR", "INT", "CDR", "CUADRA", "CASA", "SUM", "SUMINISTRO",
+    "DE", "LA", "EL", "LOS", "LAS", "DEL", "Y"
+]);
+
+function tokensDireccion(valor) {
+    return texto(valor).toUpperCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .replace(/([A-Z])(\d)/g, "$1 $2").replace(/(\d)([A-Z])/g, "$1 $2")
+        .split(/[^A-Z0-9]+/).filter(Boolean);
+}
+
+function partesDireccion(valor) {
+    const t = tokensDireccion(valor);
+    const palabras = t.filter(w => /^[A-Z]{2,}$/.test(w) && !PALABRAS_GENERICAS.has(w));
+    return {
+        letras: new Set(t.filter(w => /^[A-Z]$/.test(w))),
+        palabras,
+        calle: palabras.join("")
+    };
+}
+
+// Distancia de edicion (letras cambiadas, agregadas o quitadas).
+function distanciaEdicion(a, b) {
+    let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+        const cur = [i];
+        for (let j = 1; j <= b.length; j++) {
+            cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1,
+                prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        }
+        prev = cur;
+    }
+    return prev[b.length];
+}
+
+function parecidas(x, y) {
+    const tope = Math.max(1, Math.round(Math.max(x.length, y.length) * 0.25));
+    return x === y || distanciaEdicion(x, y) <= tope;
+}
+
+function mismaCalleConNumero(a, b) {
+    const pa = partesDireccion(a), pb = partesDireccion(b);
+
+    if (pa.letras.size && pb.letras.size &&
+        ![...pa.letras].some(l => pb.letras.has(l))) return false;
+
+    const ca = pa.calle, cb = pb.calle;
+    if (!ca || !cb || ca.includes(cb) || cb.includes(ca)) return true;
+
+    if (parecidas(ca, cb)) return true;
+
+    // Una direccion agrega palabras a la otra (JR BELEN #325 ->
+    // JR BELEN TORRES #325; ... 656 DEPARTAMENTO 2 -> ... 656 SEGUNDO PISO
+    // DEPARTAMENTO 2): cada palabra de la corta esta (o casi) en la larga.
+    const [corta, larga] = pa.palabras.length <= pb.palabras.length
+        ? [pa.palabras, pb.palabras] : [pb.palabras, pa.palabras];
+    return corta.every(w => larga.some(x => parecidas(w, x)));
+}
+
 function mismaDireccion(a, b) {
     // Llamada solo con los mismos numeros (son parte de la clave).
-    if (numerosDireccion(a)) return true;
+    if (numerosDireccion(a)) return mismaCalleConNumero(a, b);
     const pa = palabrasDireccion(a), pb = palabrasDireccion(b);
     const [menor, mayor] = pa.size <= pb.size ? [pa, pb] : [pb, pa];
     return [...menor].every(w => mayor.has(w));
