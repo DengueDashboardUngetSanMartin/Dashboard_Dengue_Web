@@ -1382,6 +1382,14 @@ function inicializarMapa() {
 
     const chk = document.getElementById("mapaCalor");
     if (chk) chk.addEventListener("change", () => { ultimaFirmaMapa = ""; actualizarMapa(); });
+
+    // Al elegir qué representa el calor, se activa el mapa de calor.
+    const modo = document.getElementById("mapaCalorModo");
+    if (modo) modo.addEventListener("change", () => {
+        if (chk) chk.checked = true;
+        ultimaFirmaMapa = "";
+        actualizarMapa();
+    });
 }
 
 // En la base de Dengue-Admin, georeferencia_X trae la LATITUD (-6.4...) y
@@ -1415,6 +1423,8 @@ function actualizarMapa() {
 
     const chk = document.getElementById("mapaCalor");
     const modoCalor = !!(chk && chk.checked && typeof L.heatLayer === "function");
+    const selModo = document.getElementById("mapaCalorModo");
+    const tipoCalor = selModo ? selModo.value : "cobertura";
 
     const puntos = [];
     let sinGps = 0;
@@ -1427,7 +1437,7 @@ function actualizarMapa() {
     }
 
     // No redibujar si el resultado no cambió (actualizaciones automáticas).
-    const firma = puntos.length + "|" + modoCalor + "|" +
+    const firma = puntos.length + "|" + modoCalor + "|" + tipoCalor + "|" +
         (puntos[0] ? puntos[0].c.join() : "") + "|" +
         (puntos.length ? puntos[puntos.length - 1].c.join() : "");
     if (firma === ultimaFirmaMapa) return;
@@ -1441,10 +1451,25 @@ function actualizarMapa() {
         ? puntos.filter((_, i) => i % Math.ceil(puntos.length / MAX_PUNTOS_MAPA) === 0)
         : puntos;
 
+    let enCalor = 0;
     if (modoCalor) {
-        capaCalor = L.heatLayer(dibujar.map(p => p.c), {
-            radius: 18, blur: 15, maxZoom: 17
-        }).addTo(mapa);
+        // cobertura : todas las viviendas visitadas, peso 1 cada una.
+        // positivas : solo viviendas con algun recipiente positivo, peso 1.
+        // intensidad: solo positivas, peso = N° de recipientes positivos
+        //             (5 o mas recipientes = color maximo).
+        let datosCalor, opciones = { radius: 18, blur: 15, maxZoom: 17 };
+        if (tipoCalor === "cobertura") {
+            datosCalor = dibujar.map(p => p.c);
+        } else {
+            const positivas = dibujar.filter(p => p.cond === "POSITIVA");
+            datosCalor = tipoCalor === "intensidad"
+                ? positivas.map(p => [p.c[0], p.c[1], cantidadRecipientesPositivos(p.fila)])
+                : positivas.map(p => p.c);
+            opciones = { radius: 22, blur: 18, maxZoom: 17,
+                max: tipoCalor === "intensidad" ? 5 : 1 };
+        }
+        enCalor = datosCalor.length;
+        capaCalor = L.heatLayer(datosCalor, opciones).addTo(mapa);
     } else {
         dibujar.forEach(p => {
             const f = p.fila;
@@ -1477,6 +1502,8 @@ function actualizarMapa() {
     if (total) {
         total.textContent = "Se encontraron " + puntos.length.toLocaleString("es-PE") + " viviendas" +
             (sinGps ? " (" + sinGps.toLocaleString("es-PE") + " sin GPS)" : "") +
+            (modoCalor && tipoCalor !== "cobertura"
+                ? " · calor con " + enCalor.toLocaleString("es-PE") + " positivas" : "") +
             (dibujar.length < puntos.length ? " · mostrando una muestra; filtra por localidad para ver todas" : "");
     }
 }
