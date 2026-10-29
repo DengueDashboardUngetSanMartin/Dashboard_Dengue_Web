@@ -55,6 +55,23 @@
     <link rel="stylesheet"
           href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
     <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- Agrupación de puntos (círculos con número) y mapa de calor -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+    <script defer src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+    <script defer src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+
+    <style>
+        .mapa-barra { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:0 0 8px; font-size:12px; }
+        .mapa-chip { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:6px; border:1px solid #e1e7ec; background:#fff; }
+        .mapa-chip i { width:8px; height:8px; border-radius:50%; display:inline-block; }
+        .mapa-total { margin-left:auto; color:#555; }
+        .mapa-calor { display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none; }
+        .cluster-viv { background:transparent; }
+        .cluster-viv div { width:100%; height:100%; border-radius:50%; background:#0000f0; color:#fff;
+            display:flex; align-items:center; justify-content:center; font-weight:600;
+            font-family:Arial, sans-serif; box-shadow:0 0 0 3px rgba(0,0,240,.18); }
+    </style>
 </head>
 
 <body>
@@ -591,6 +608,16 @@
 
             <div class="panel-title">
                 🗺️ Viviendas inspeccionadas por localidad
+            </div>
+
+            <div class="mapa-barra">
+                <span class="mapa-chip"><i style="background:#e53935"></i>Positivas</span>
+                <span class="mapa-chip"><i style="background:#1e6fff"></i>Inspeccionadas</span>
+                <span class="mapa-chip"><i style="background:#111"></i>Cerradas</span>
+                <span class="mapa-chip"><i style="background:#8e24aa"></i>Renuentes</span>
+                <span class="mapa-chip"><i style="background:#f57c00"></i>Deshabitadas</span>
+                <label class="mapa-calor"><input type="checkbox" id="mapaCalor"> Mapa de calor</label>
+                <span class="mapa-total" id="mapaTotal"></span>
             </div>
 
             <div id="map"

@@ -1335,54 +1335,150 @@ function actualizarTabla() {
 // MAPA
 // ============================================================
 
+let capaCalor = null;
+let ultimaFirmaMapa = "";
+
+const COLOR_CONDICION = {
+    POSITIVA: "#e53935",
+    INSPECCIONADA: "#1e6fff",
+    CERRADA: "#111111",
+    RENUENTE: "#8e24aa",
+    DESHABITADA: "#f57c00"
+};
+
 function inicializarMapa() {
     const elemento = document.getElementById("map");
 
     if (!elemento || typeof L === "undefined" || mapa) return;
 
-    // preferCanvas: dibuja los puntos en un solo lienzo (mucho más rápido
-    // que 1500 elementos SVG sueltos).
+    // preferCanvas: dibuja los puntos en un solo lienzo (más rápido).
     mapa = L.map("map", { preferCanvas: true }).setView([-6.4869, -76.3625], 11);
-    capaMarcadores = L.layerGroup().addTo(mapa);
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: "&copy; OpenStreetMap"
+    // Mismo estilo de mapa base que Dengue-Admin (CARTO Voyager).
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+        maxZoom: 19,
+        subdomains: "abcd",
+        attribution: "© OpenStreetMap © CARTO"
     }).addTo(mapa);
+
+    capaMarcadores = (typeof L.markerClusterGroup === "function")
+        ? L.markerClusterGroup({
+            chunkedLoading: true,
+            showCoverageOnHover: false,
+            maxClusterRadius: 60,
+            iconCreateFunction: grupo => {
+                const n = grupo.getChildCount();
+                const tam = n < 10 ? 26 : n < 100 ? 40 : n < 1000 ? 50 : 60;
+                return L.divIcon({
+                    html: "<div style=\"font-size:" + (tam < 30 ? 11 : tam < 45 ? 15 : 18) +
+                        "px\">" + n.toLocaleString("es-PE") + "</div>",
+                    className: "cluster-viv",
+                    iconSize: [tam, tam]
+                });
+            }
+        })
+        : L.layerGroup();
+    capaMarcadores.addTo(mapa);
+
+    const chk = document.getElementById("mapaCalor");
+    if (chk) chk.addEventListener("change", () => { ultimaFirmaMapa = ""; actualizarMapa(); });
 }
+
+// En la base de Dengue-Admin, georeferencia_X trae la LATITUD (-6.4...) y
+// georeferencia_Y la LONGITUD (-76.3...). Se detecta por el rango de valores,
+// así funciona aunque algún registro venga con el orden al revés.
+function coordenadas(fila) {
+    const x = numero(fila.georeferencia_X);
+    const y = numero(fila.georeferencia_Y);
+    if (!x || !y) return null;
+
+    const esLat = v => v > -20 && v < 2;
+    const esLng = v => v > -82 && v < -68;
+
+    if (esLat(x) && esLng(y)) return [x, y];
+    if (esLat(y) && esLng(x)) return [y, x];
+    return null;
+}
+
+function condicionMapa(fila) {
+    if (cerrada(fila)) return "CERRADA";
+    if (renuente(fila)) return "RENUENTE";
+    if (deshabitada(fila)) return "DESHABITADA";
+    if (inspeccionada(fila)) return viviendaPositiva(fila) ? "POSITIVA" : "INSPECCIONADA";
+    return null;
+}
+
+const MAX_PUNTOS_MAPA = 40000;
 
 function actualizarMapa() {
     if (!mapa) return;
 
-    if (capaMarcadores) capaMarcadores.clearLayers();
+    const chk = document.getElementById("mapaCalor");
+    const modoCalor = !!(chk && chk.checked && typeof L.heatLayer === "function");
+
+    const puntos = [];
+    let sinGps = 0;
+    for (const fila of datosFiltrados) {
+        const cond = condicionMapa(fila);
+        if (!cond) continue;
+        const c = coordenadas(fila);
+        if (!c) { sinGps++; continue; }
+        puntos.push({ c, cond, fila });
+    }
+
+    // No redibujar si el resultado no cambió (actualizaciones automáticas).
+    const firma = puntos.length + "|" + modoCalor + "|" +
+        (puntos[0] ? puntos[0].c.join() : "") + "|" +
+        (puntos.length ? puntos[puntos.length - 1].c.join() : "");
+    if (firma === ultimaFirmaMapa) return;
+    ultimaFirmaMapa = firma;
+
+    capaMarcadores.clearLayers();
+    if (capaCalor) { mapa.removeLayer(capaCalor); capaCalor = null; }
     marcadores = [];
 
-    let contador = 0;
+    const dibujar = puntos.length > MAX_PUNTOS_MAPA
+        ? puntos.filter((_, i) => i % Math.ceil(puntos.length / MAX_PUNTOS_MAPA) === 0)
+        : puntos;
 
-    datosFiltrados.filter(inspeccionada).forEach(fila => {
-        if (contador >= 1500) return;
+    if (modoCalor) {
+        capaCalor = L.heatLayer(dibujar.map(p => p.c), {
+            radius: 18, blur: 15, maxZoom: 17
+        }).addTo(mapa);
+    } else {
+        dibujar.forEach(p => {
+            const f = p.fila;
+            const color = COLOR_CONDICION[p.cond];
+            const m = L.circleMarker(p.c, {
+                radius: 6, color: "#ffffff", weight: 1.5,
+                fillColor: color, fillOpacity: 0.95
+            }).bindPopup(() =>
+                "<strong>" + p.cond + "</strong><br>" +
+                "📍 " + texto(f.localidad_eess) + " · Sector " + texto(f.sector) +
+                " · Mz " + texto(f.codigo_manzana) + "<br>" +
+                "🏠 " + texto(f.direccion) + "<br>" +
+                "👤 " + texto(f.nombre_inspector) + "<br>" +
+                "📅 " + texto(f.fecha_creacion).slice(0, 10) +
+                (p.cond === "POSITIVA" ? "<br>🦟 Recipientes positivos: " + cantidadRecipientesPositivos(f) : "")
+            );
+            marcadores.push(m);
+        });
+        if (capaMarcadores.addLayers) capaMarcadores.addLayers(marcadores);
+        else marcadores.forEach(m => m.addTo(capaMarcadores));
+    }
 
-        const lat = numero(fila.georeferencia_Y);
-        const lng = numero(fila.georeferencia_X);
+    // Acercar el mapa a lo filtrado, como en Dengue-Admin.
+    if (dibujar.length) {
+        const limites = L.latLngBounds(dibujar.map(p => p.c));
+        mapa.fitBounds(limites.pad(0.05), { maxZoom: 17 });
+    }
 
-        if (!lat || !lng) return;
-        if (lat < -20 || lat > 5 || lng < -85 || lng > -65) return;
-
-        const marcador = L.circleMarker([lat, lng], {
-            radius: 4,
-            color: "#078ca5",
-            fillColor: "#269bb0",
-            fillOpacity: 0.55,
-            weight: 1
-        }).bindPopup(
-            "<strong>Vivienda inspeccionada</strong><br>" +
-            "📍 " + texto(fila.localidad_eess) + "<br>" +
-            "🏠 " + texto(fila.direccion) + "<br>" +
-            "👤 " + texto(fila.nombre_inspector)
-        ).addTo(capaMarcadores || mapa);
-
-        marcadores.push(marcador);
-        contador++;
-    });
+    const total = document.getElementById("mapaTotal");
+    if (total) {
+        total.textContent = "Se encontraron " + puntos.length.toLocaleString("es-PE") + " viviendas" +
+            (sinGps ? " (" + sinGps.toLocaleString("es-PE") + " sin GPS)" : "") +
+            (dibujar.length < puntos.length ? " · mostrando una muestra; filtra por localidad para ver todas" : "");
+    }
 }
 
 // ============================================================
