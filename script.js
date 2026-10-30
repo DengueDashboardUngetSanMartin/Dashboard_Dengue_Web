@@ -1473,9 +1473,28 @@ function asegurarCuadroProgramadas() {
     let valor = nueva;
     ruta.forEach(i => { valor = valor.children[i]; });
     valor.id = "coverageProgramadas";
+    nueva.dataset.caja = "programadas";
 
     caja.parentElement.insertBefore(nueva, caja.nextSibling);
+    ordenarCuadrosCobertura(caja.parentElement);
     return true;
+}
+
+// Con 4 recuadros ya no entran apilados: se ordenan en 2 x 2
+// (inspeccionadas | total base / programadas | meta anual).
+function ordenarCuadrosCobertura(cont) {
+    cont.style.display = "grid";
+    cont.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
+    cont.style.gap = "8px";
+    cont.style.alignContent = "center";
+    cont.style.height = "auto";
+    cont.style.overflow = "visible";
+    [...cont.children].forEach(c => {
+        c.style.margin = "0";
+        c.style.minWidth = "0";
+        c.style.boxSizing = "border-box";
+        c.style.position = "relative";
+    });
 }
 
 // ------------------------------------------------------------
@@ -1566,11 +1585,14 @@ function asegurarBotonModificar() {
     b.id = "btnModificarProgramadas";
     b.type = "button";
     b.textContent = "\u270e Modificar";
-    b.style.cssText = "margin-left:8px;font-size:11px;padding:1px 6px;" +
-        "border:1px solid #269bb0;border-radius:4px;background:#fff;" +
-        "color:#078ca5;cursor:pointer;vertical-align:middle;";
+    b.style.cssText = "position:absolute;top:6px;right:6px;font-size:10px;" +
+        "line-height:1.4;padding:1px 6px;border:1px solid #269bb0;" +
+        "border-radius:4px;background:#fff;color:#078ca5;cursor:pointer;";
     b.addEventListener("click", modificarProgramadas);
-    valor.insertAdjacentElement("afterend", b);
+    // En la esquina superior derecha del recuadro, sin mover los textos.
+    const caja = valor.closest("[data-caja=\"programadas\"]") || valor.parentElement;
+    caja.style.position = "relative";
+    caja.appendChild(b);
 }
 
 let avisoSinTotal = "";
