@@ -950,6 +950,7 @@ function actualizarDashboard() {
 
     seguro("tarjetas", actualizarTarjetas);
     seguro("tratadas", actualizarTratadas);
+    seguro("indices", actualizarIndices);
     seguro("cobertura", actualizarCobertura);
     seguro("condicion", actualizarCondicion);
     seguro("ranking", actualizarRanking);
@@ -1071,6 +1072,105 @@ function actualizarTratadas() {
     const el = document.getElementById("totalTratadas");
     if (el) el.title = "Tratamiento qu\u00edmico (TQ): " + fmt(tq) +
         " \u00b7 Tratamiento f\u00edsico (TF): " + fmt(tf);
+}
+
+// ============================================================
+// INDICES ENTOMOLOGICOS (tarjetas): IA, IR, IB y grado de infestacion.
+// Mismas formulas que el consolidado de encuesta.
+//   IA = viviendas positivas / viviendas inspeccionadas x 100
+//   IR = recipientes positivos / recipientes inspeccionados x 100
+//   IB = recipientes positivos / viviendas inspeccionadas x 100
+// ============================================================
+const COLOR_GRADO = { BAJO: "#2e9e44", MEDIO: "#e08a00", ALTO: "#e53935" };
+
+// Copia la tarjeta "Recipientes positivos" con otro titulo y la coloca
+// despues de la tarjeta que contiene "despuesDeId". Devuelve true si existe.
+function clonarTarjeta(nuevoId, titulo, subtitulo, despuesDeId) {
+    if (document.getElementById(nuevoId)) return true;
+    const ref = document.getElementById("totalRecipientesPositivos");
+    const vecina = document.getElementById("totalViviendasPositivas");
+    const despues = document.getElementById(despuesDeId);
+    if (!ref || !vecina || !despues) return false;
+
+    // La tarjeta de "ref": el ultimo contenedor que no incluye la vecina.
+    let card = ref;
+    while (card.parentElement && !card.parentElement.contains(vecina)) card = card.parentElement;
+    if (!card.parentElement) return false;
+
+    const ruta = [];
+    for (let e = ref; e !== card; e = e.parentElement) {
+        ruta.unshift([...e.parentElement.children].indexOf(e));
+    }
+
+    const nueva = card.cloneNode(true);
+    nueva.querySelectorAll("[id]").forEach(e => e.removeAttribute("id"));
+    const rec = document.createTreeWalker(nueva, NodeFilter.SHOW_TEXT);
+    const nodos = [];
+    while (rec.nextNode()) nodos.push(rec.currentNode);
+    nodos.forEach(n => {
+        const t = n.textContent.trim().toLowerCase();
+        if (t === "recipientes positivos") n.textContent = titulo;
+        else if (t.startsWith("positividad")) {
+            n.textContent = subtitulo;
+            n.parentElement.id = nuevoId + "Sub";
+        }
+    });
+    let valor = nueva;
+    ruta.forEach(i => { valor = valor.children[i]; });
+    valor.id = nuevoId;
+
+    // Insertar despues de la tarjeta que contiene "despuesDeId".
+    let ancla = despues;
+    while (ancla.parentElement && ancla.parentElement !== card.parentElement) ancla = ancla.parentElement;
+    card.parentElement.insertBefore(nueva, ancla.nextSibling);
+    return true;
+}
+
+function actualizarIndices() {
+    if (!clonarTarjeta("indiceAedico", "\u00cdndice a\u00e9dico (IA)", "Grado", "totalTratadas")) return;
+    clonarTarjeta("indiceRecipientes", "\u00cdndice de recipientes (IR)",
+        "Recip. positivos / inspeccionados", "indiceAedico");
+    clonarTarjeta("indiceBreteau", "\u00cdndice de Breteau (IB)",
+        "Recip. positivos x 100 viviendas", "indiceRecipientes");
+
+    let insp = 0, vivPos = 0, recInsp = 0, recPos = 0;
+    datosFiltrados.forEach(f => {
+        if (!inspeccionada(f)) return;
+        insp++;
+        let p = 0;
+        CRIADEROS_TRATAMIENTO.forEach(c => {
+            recInsp += Math.max(0, numero(f[c + "_I"]));
+            p += Math.max(0, numero(f[c + "_P"]));
+        });
+        recPos += p;
+        if (p > 0) vivPos++;
+    });
+
+    const ia = insp ? vivPos / insp * 100 : 0;
+    const ir = recInsp ? recPos / recInsp * 100 : 0;
+    const ib = insp ? recPos / insp * 100 : 0;
+    const grado = gradoInfestacion(ia);
+
+    setTexto("indiceAedico", ia.toFixed(2) + " %");
+    setTexto("indiceRecipientes", ir.toFixed(2) + " %");
+    setTexto("indiceBreteau", ib.toFixed(2));
+
+    const sub = document.getElementById("indiceAedicoSub");
+    if (sub) {
+        sub.textContent = insp ? "Grado de infestaci\u00f3n: " + grado : "Sin viviendas inspeccionadas";
+        sub.style.color = insp ? COLOR_GRADO[grado] : "";
+        sub.style.fontWeight = "700";
+    }
+    const tips = {
+        indiceAedico: fmt(vivPos) + " viviendas positivas \u00f7 " + fmt(insp) + " inspeccionadas \u00d7 100" +
+            "\nGrado: BAJO < 1 %, MEDIO 1 a < 2 %, ALTO \u2265 2 %",
+        indiceRecipientes: fmt(recPos) + " recipientes positivos \u00f7 " + fmt(recInsp) + " inspeccionados \u00d7 100",
+        indiceBreteau: fmt(recPos) + " recipientes positivos \u00f7 " + fmt(insp) + " viviendas inspeccionadas \u00d7 100"
+    };
+    Object.entries(tips).forEach(([id, t]) => {
+        const el = document.getElementById(id);
+        if (el) el.title = t;
+    });
 }
 
 // ============================================================
@@ -1905,12 +2005,59 @@ function actualizarMensual() {
 }
 
 function actualizarSector() {
-    const o = agruparInspeccionadas("sector", "Sin sector", sectorNormalizado);
+    // Por sector (unificado): viviendas inspeccionadas y positivas, con el
+    // indice aedico y su grado en el tooltip. Todos los sectores, en orden.
+    const g = {};
+    datosFiltrados.forEach(f => {
+        if (!inspeccionada(f)) return;
+        const k = texto(f.sector) ? sectorNormalizado(f.sector) : "Sin sector";
+        if (!g[k]) g[k] = { insp: 0, pos: 0, rec: 0 };
+        g[k].insp++;
+        const p = cantidadRecipientesPositivos(f);
+        g[k].rec += p;
+        if (p > 0) g[k].pos++;
+    });
+    const filas = Object.entries(g).sort((a, b) =>
+        (Number(a[0]) - Number(b[0])) || a[0].localeCompare(b[0], "es"));
 
-    graficoBarras(
-        "sectorChart", o.map(x => x[0]), o.map(x => x[1]),
-        "Inspeccionadas", "#75bce7", false
-    );
+    crearGrafico("sectorChart", {
+        type: "bar",
+        data: {
+            labels: filas.map(x => x[0]),
+            datasets: [
+                { label: "Inspeccionadas", data: filas.map(x => x[1].insp),
+                  backgroundColor: "#75bce7", borderRadius: 4 },
+                { label: "Positivas", data: filas.map(x => x[1].pos),
+                  backgroundColor: "#ed4149", borderRadius: 4 }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            plugins: {
+                legend: { display: true, position: "top" },
+                tooltip: {
+                    callbacks: {
+                        title: items => "Sector " + items[0].label,
+                        label: c => " " + c.dataset.label + ": " + fmt(c.raw),
+                        afterBody: items => {
+                            const v = filas[items[0].dataIndex][1];
+                            const ia = v.insp ? v.pos / v.insp * 100 : 0;
+                            return [
+                                "IA: " + ia.toFixed(2) + " % (" + gradoInfestacion(ia) + ")",
+                                "Recipientes positivos: " + fmt(v.rec)
+                            ];
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: { ticks: { autoSkip: false } },
+                y: { beginAtZero: true, ticks: { callback: v => fmt(v) } }
+            }
+        }
+    });
 }
 
 function actualizarInspector() {
@@ -2118,6 +2265,62 @@ function condicionMapa(fila) {
     return null;
 }
 
+// Leyenda del mapa: cada boton (Positivas, Inspeccionadas, Cerradas,
+// Renuentes, Deshabitadas) muestra u oculta esa condicion en el mapa.
+const condicionesOcultas = new Set();
+const LEYENDA_CONDICION = {
+    "positivas": "POSITIVA",
+    "inspeccionadas": "INSPECCIONADA",
+    "cerradas": "CERRADA",
+    "renuentes": "RENUENTE",
+    "deshabitadas": "DESHABITADA"
+};
+let leyendaConfigurada = false;
+
+function configurarLeyendaMapa() {
+    if (leyendaConfigurada) return;
+    const mapaEl = document.getElementById("map");
+    if (!mapaEl) return;
+
+    // Panel que contiene el mapa y su leyenda.
+    let panel = mapaEl.parentElement;
+    for (let i = 0; i < 4 && panel && !/positivas/i.test(panel.textContent); i++) {
+        panel = panel.parentElement;
+    }
+    if (!panel) return;
+
+    // El boton es el elemento mas externo cuyo texto es solo la condicion.
+    const botones = [];
+    panel.querySelectorAll("*").forEach(el => {
+        if (mapaEl.contains(el) || el.closest("select, option") ||
+            el.querySelector("input, select")) return;
+        const t = el.textContent.replace(/[\u25cf\u2022\s]+/g, " ").trim().toLowerCase();
+        const cond = LEYENDA_CONDICION[t];
+        if (!cond) return;
+        const padre = el.parentElement;
+        const tp = padre ? padre.textContent.replace(/[\u25cf\u2022\s]+/g, " ").trim().toLowerCase() : "";
+        if (padre && LEYENDA_CONDICION[tp]) return; // el padre es el boton
+        botones.push({ el, cond });
+    });
+    if (!botones.length) return;
+    leyendaConfigurada = true;
+
+    botones.forEach(({ el, cond }) => {
+        el.style.cursor = "pointer";
+        el.style.userSelect = "none";
+        el.title = "Clic para mostrar u ocultar en el mapa";
+        el.addEventListener("click", () => {
+            if (condicionesOcultas.has(cond)) condicionesOcultas.delete(cond);
+            else condicionesOcultas.add(cond);
+            const oculto = condicionesOcultas.has(cond);
+            el.style.opacity = oculto ? "0.35" : "";
+            el.style.textDecoration = oculto ? "line-through" : "";
+            ultimaFirmaMapa = "";
+            actualizarMapa();
+        });
+    });
+}
+
 const MAX_PUNTOS_MAPA = 40000;
 
 function actualizarMapa() {
@@ -2130,9 +2333,10 @@ function actualizarMapa() {
 
     const puntos = [];
     let sinGps = 0;
+    configurarLeyendaMapa();
     for (const fila of datosFiltrados) {
         const cond = condicionMapa(fila);
-        if (!cond) continue;
+        if (!cond || condicionesOcultas.has(cond)) continue;
         const c = coordenadas(fila);
         if (!c) { sinGps++; continue; }
         puntos.push({ c, cond, fila });
@@ -2140,6 +2344,7 @@ function actualizarMapa() {
 
     // No redibujar si el resultado no cambió (actualizaciones automáticas).
     const firma = puntos.length + "|" + modoCalor + "|" + tipoCalor + "|" +
+        [...condicionesOcultas].sort().join(",") + "|" +
         (puntos[0] ? puntos[0].c.join() : "") + "|" +
         (puntos.length ? puntos[puntos.length - 1].c.join() : "");
     if (firma === ultimaFirmaMapa) return;
