@@ -1595,6 +1595,38 @@ function asegurarBotonModificar() {
     caja.appendChild(b);
 }
 
+// Cambia el texto bajo el porcentaje de la dona segun el tipo filtrado y
+// resalta el recuadro que se usa como denominador.
+function rotularCobertura(esVigilancia, tipoSel, insp, denom) {
+    const pct = document.getElementById("coveragePercent");
+    if (pct) {
+        const rotulo = esVigilancia ? "Cobertura de vigilancia"
+            : (tipoSel === "Todos" ? "Cobertura de inspecci\u00f3n" : "Cobertura de control");
+        const rec = document.createTreeWalker(pct.parentElement, NodeFilter.SHOW_TEXT);
+        const nodos = [];
+        while (rec.nextNode()) nodos.push(rec.currentNode);
+        nodos.filter(n => !pct.contains(n)).forEach(n => {
+            // Puede venir en una linea o en dos ("Cobertura" / "de inspeccion").
+            const t = n.textContent.trim();
+            if (/^cobertura\s+de\s/i.test(t)) {
+                n.textContent = rotulo;
+            } else if (/^de\s+(inspecci|vigilancia|control)/i.test(t)) {
+                n.textContent = rotulo.split(" ").slice(1).join(" ");
+            }
+        });
+        pct.title = "Inspeccionadas " + fmt(insp) + " \u00f7 " +
+            (esVigilancia ? "viviendas programadas " : "total de viviendas ") + fmt(denom);
+    }
+    // Borde en el recuadro que hace de denominador.
+    [["coverageTotal", !esVigilancia], ["coverageProgramadas", esVigilancia]].forEach(([id, activo]) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const caja = el.closest("[data-caja]") || el.parentElement;
+        caja.style.outline = activo ? "2px solid #269bb0" : "none";
+        caja.style.outlineOffset = "-2px";
+    });
+}
+
 let avisoSinTotal = "";
 
 function actualizarCobertura() {
@@ -1632,13 +1664,21 @@ function actualizarCobertura() {
     }
     avisoSinTotal = aviso;
 
-    const porcentajeReal = viviendasBase > 0
-        ? Number(((inspeccionadasTotal / viviendasBase) * 100).toFixed(1))
+    // Denominador segun el tipo de inspeccion filtrado:
+    //  - VIGILANCIA: viviendas programadas (muestra).
+    //  - CONTROL u otro / Todos: total de viviendas del establecimiento.
+    const tipoSel = valorFiltro("filtroTipo", "Todos");
+    const esVigilancia = /VIGIL/i.test(tipoSel);
+    const denominador = esVigilancia ? programadasVigilancia : viviendasBase;
+
+    const porcentajeReal = denominador > 0
+        ? Number(((inspeccionadasTotal / denominador) * 100).toFixed(1))
         : 0;
     // El grafico y la barra se topan en 100; el numero muestra el valor real.
     const porcentaje = Math.min(100, porcentajeReal);
 
     setTexto("coveragePercent", porcentajeReal + "%");
+    rotularCobertura(esVigilancia, tipoSel, inspeccionadasTotal, denominador);
     const notaCob = document.getElementById("coverageTotal");
     if (notaCob) notaCob.title = avisoSinTotal
         ? "Sin total de viviendas (no se cuentan): " + avisoSinTotal : "";
