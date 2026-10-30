@@ -1432,6 +1432,147 @@ function totalViviendasEess(localidad, distrito) {
     return candidatos.length === 1 ? indiceViviendasEess.porDistrito[candidatos[0]] : null;
 }
 
+// Viviendas programadas para VIGILANCIA (muestreo aleatorio sistematico),
+// misma formula del Excel "Total de viviendas por EESS" (columna METODO
+// ALEATORIO SISTEMATICO): n = N*Z^2*p*q / (e^2*(N-1) + Z^2*p*q),
+// con Z = 1.96 (95 %), p = q = 0.5, e = 0.05. Ej.: Punta del Este N = 8886 -> 368.
+function viviendasProgramadasVigilancia(N) {
+    if (!N || N <= 0) return 0;
+    const z2pq = 1.96 * 1.96 * 0.5 * 0.5;
+    return Math.round((N * z2pq) / (0.05 * 0.05 * (N - 1) + z2pq));
+}
+
+// Crea (una sola vez) el recuadro "Viviendas programadas (vigilancia)"
+// copiando el de "Total viviendas base", sin modificar dashboard.html.
+function asegurarCuadroProgramadas() {
+    if (document.getElementById("coverageProgramadas")) return true;
+    const ref = document.getElementById("coverageTotal");
+    const vecino = document.getElementById("coverageInspeccionadas");
+    if (!ref || !vecino) return false;
+
+    let caja = ref;
+    while (caja.parentElement && !caja.parentElement.contains(vecino)) {
+        caja = caja.parentElement;
+    }
+    if (!caja.parentElement) return false;
+
+    const ruta = [];
+    for (let e = ref; e !== caja; e = e.parentElement) {
+        ruta.unshift([...e.parentElement.children].indexOf(e));
+    }
+
+    const nueva = caja.cloneNode(true);
+    nueva.querySelectorAll("[id]").forEach(e => e.removeAttribute("id"));
+    const rec = document.createTreeWalker(nueva, NodeFilter.SHOW_TEXT);
+    while (rec.nextNode()) {
+        const n = rec.currentNode;
+        if (n.textContent.trim().toLowerCase() === "total viviendas base") {
+            n.textContent = "Viviendas programadas (vigilancia)";
+        }
+    }
+    let valor = nueva;
+    ruta.forEach(i => { valor = valor.children[i]; });
+    valor.id = "coverageProgramadas";
+
+    caja.parentElement.insertBefore(nueva, caja.nextSibling);
+    return true;
+}
+
+// ------------------------------------------------------------
+// VIVIENDAS PROGRAMADAS MODIFICADAS A MANO
+// 1) Para todos los usuarios: escribirlas aqui, con el nombre del
+//    establecimiento tal como sale en el dashboard. Ej.:
+//      "PUNTA DEL ESTE": 400,
+// 2) Desde la pagina: boton "Modificar" del recuadro (filtrando una sola
+//    localidad). Ese cambio se guarda solo en el navegador de esa PC.
+// Lo escrito en la pagina tiene prioridad sobre esta lista.
+// ------------------------------------------------------------
+const PROGRAMADAS_FIJAS = {
+};
+
+const CLAVE_PROGRAMADAS_LOCAL = "dengue_programadas_vigilancia";
+
+function leerProgramadasLocales() {
+    try {
+        return JSON.parse(localStorage.getItem(CLAVE_PROGRAMADAS_LOCAL) || "{}") || {};
+    } catch (e) {
+        return {};
+    }
+}
+
+function guardarProgramadasLocales(obj) {
+    try {
+        localStorage.setItem(CLAVE_PROGRAMADAS_LOCAL, JSON.stringify(obj));
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+// Devuelve { valor, origen } para un establecimiento.
+function programadasDe(localidad, totalViviendas) {
+    const k = claveEess(localidad);
+    const locales = leerProgramadasLocales();
+    if (locales[k] > 0) return { valor: locales[k], origen: "modificado en este navegador" };
+    for (const [nombre, v] of Object.entries(PROGRAMADAS_FIJAS)) {
+        if (claveEess(nombre) === k && v > 0) return { valor: v, origen: "fijado en script.js" };
+    }
+    return { valor: viviendasProgramadasVigilancia(totalViviendas), origen: "calculado" };
+}
+
+// Localidades con total de viviendas que se ven con los filtros actuales.
+let locsCoberturaActual = [];
+
+function modificarProgramadas() {
+    if (locsCoberturaActual.length !== 1) {
+        alert("Para modificar las viviendas programadas, filtra una sola localidad.");
+        return;
+    }
+    const { loc, total } = locsCoberturaActual[0];
+    const actual = programadasDe(loc, total);
+    const calculado = viviendasProgramadasVigilancia(total);
+    const resp = prompt(
+        "Viviendas programadas (vigilancia) para " + loc + ".\n" +
+        "Calculado por f\u00f3rmula: " + calculado + ". Actual: " + actual.valor +
+        " (" + actual.origen + ").\n\n" +
+        "Escribe el nuevo valor, o deja vac\u00edo para volver al calculado:",
+        String(actual.valor)
+    );
+    if (resp === null) return; // cancelado
+
+    const locales = leerProgramadasLocales();
+    const k = claveEess(loc);
+    const n = parseInt(String(resp).replace(/[^0-9]/g, ""), 10);
+    if (String(resp).trim() === "") {
+        delete locales[k];
+    } else if (!n || n <= 0) {
+        alert("Escribe un n\u00famero mayor que cero.");
+        return;
+    } else {
+        locales[k] = n;
+    }
+    if (!guardarProgramadasLocales(locales)) {
+        alert("Este navegador no permite guardar el cambio.");
+        return;
+    }
+    actualizarCobertura();
+}
+
+// Boton "Modificar" junto al numero (se crea una sola vez).
+function asegurarBotonModificar() {
+    const valor = document.getElementById("coverageProgramadas");
+    if (!valor || document.getElementById("btnModificarProgramadas")) return;
+    const b = document.createElement("button");
+    b.id = "btnModificarProgramadas";
+    b.type = "button";
+    b.textContent = "\u270e Modificar";
+    b.style.cssText = "margin-left:8px;font-size:11px;padding:1px 6px;" +
+        "border:1px solid #269bb0;border-radius:4px;background:#fff;" +
+        "color:#078ca5;cursor:pointer;vertical-align:middle;";
+    b.addEventListener("click", modificarProgramadas);
+    valor.insertAdjacentElement("afterend", b);
+}
+
 let avisoSinTotal = "";
 
 function actualizarCobertura() {
@@ -1448,11 +1589,18 @@ function actualizarCobertura() {
 
     let inspeccionadasTotal = 0;
     let viviendasBase = 0;
+    let programadasVigilancia = 0; // suma por establecimiento
+    const programadasModificadas = [];
+    const locsConTotal = [];
     const sinTotal = [];
     Object.entries(porLocalidad).forEach(([loc, v]) => {
         const total = totalViviendasEess(loc, v.dist);
         if (!total) { sinTotal.push(loc); return; }
         viviendasBase += total;
+        const prog = programadasDe(loc, total);
+        programadasVigilancia += prog.valor;
+        if (prog.origen !== "calculado") programadasModificadas.push(loc + " (" + prog.origen + ")");
+        locsConTotal.push({ loc, total });
         inspeccionadasTotal += v.insp;
     });
 
@@ -1474,6 +1622,24 @@ function actualizarCobertura() {
         ? "Sin total de viviendas (no se cuentan): " + avisoSinTotal : "";
     setTexto("coverageInspeccionadas", fmt(inspeccionadasTotal));
     setTexto("coverageTotal", fmt(viviendasBase));
+
+    locsCoberturaActual = locsConTotal;
+    if (asegurarCuadroProgramadas()) {
+        setTexto("coverageProgramadas", fmt(programadasVigilancia));
+        asegurarBotonModificar();
+        const elProg = document.getElementById("coverageProgramadas");
+        if (elProg) elProg.title = programadasVigilancia > 0
+            ? "Muestra para vigilancia (95 % de confianza, 5 % de error). Avance: " +
+              fmt(inspeccionadasTotal) + " de " + fmt(programadasVigilancia) + " (" +
+              (inspeccionadasTotal / programadasVigilancia * 100).toFixed(1) + " %)" +
+              (programadasModificadas.length
+                  ? "\nModificadas a mano: " + programadasModificadas.join(", ") : "")
+            : "";
+        const btn = document.getElementById("btnModificarProgramadas");
+        if (btn) btn.title = locsConTotal.length === 1
+            ? "Modificar las viviendas programadas de " + locsConTotal[0].loc
+            : "Filtra una sola localidad para modificar";
+    }
 
     const progreso = document.getElementById("coverageProgress");
     if (progreso) progreso.style.width = porcentaje + "%";
