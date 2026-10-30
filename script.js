@@ -812,7 +812,7 @@ function llenarSelect(id, valores, inicial) {
 function inicializarFiltros(primeraCarga = true) {
     llenarSelect("filtroLocalidad", valoresUnicos("localidad_eess"), "Todas");
     llenarSelect("filtroInspector", valoresUnicos("nombre_inspector"), "Todos");
-    llenarSelect("filtroSector", valoresUnicos("sector"), "Todos");
+    llenarSelect("filtroSector", sectoresUnicos(), "Todos");
     llenarSelect("filtroTipo", valoresUnicos("tipoActividadInspeccion"), "Todos");
     llenarSelect("filtroManzana", valoresUnicos("codigo_manzana"), "Todas");
     llenarSelect("filtroMes", MESES, "Todos");
@@ -847,6 +847,13 @@ function inicializarFiltros(primeraCarga = true) {
 }
 
 
+// Sectores unificados: "6", "06" y "SECTOR 6" son el mismo sector.
+function sectoresUnicos() {
+    return [...new Set(
+        datosOriginales.map(f => texto(f.sector)).filter(Boolean).map(sectorNormalizado)
+    )].sort((a, b) => (Number(a) - Number(b)) || a.localeCompare(b, "es"));
+}
+
 function valorFiltro(id, porDefecto) {
     const el = document.getElementById(id);
     return el ? texto(el.value) || porDefecto : porDefecto;
@@ -879,7 +886,7 @@ function cumpleFiltros(fila, F, nombreInspector, fecha, usarTipo) {
         nombreInspector !== F.inspector) return false;
 
     if (F.sector !== "Todos" &&
-        texto(fila.sector) !== F.sector) return false;
+        sectorNormalizado(fila.sector) !== F.sector) return false;
 
     if (usarTipo && F.tipo !== "Todos" &&
         texto(fila.tipoActividadInspeccion) !== F.tipo) return false;
@@ -942,6 +949,7 @@ function actualizarDashboard() {
     aplicarFiltros();
 
     seguro("tarjetas", actualizarTarjetas);
+    seguro("tratadas", actualizarTratadas);
     seguro("cobertura", actualizarCobertura);
     seguro("condicion", actualizarCondicion);
     seguro("ranking", actualizarRanking);
@@ -990,25 +998,480 @@ function actualizarTarjetas() {
 }
 
 // ============================================================
+// VIVIENDAS TRATADAS = suma de TQ (tratamiento quimico) + TF (tratamiento
+// fisico) de los 10 tipos de criadero, segun definicion del usuario.
+// ============================================================
+const CRIADEROS_TRATAMIENTO = [
+    "tanque_alto", "tanque_bajo", "barril_cilindro", "sanson_bidon",
+    "baldes_bateas_tinajas", "llantas", "floreros_maceteros",
+    "latas_botellas", "inservibles", "otros"
+];
+
+function tratamientosFila(f) {
+    let tq = 0, tf = 0;
+    CRIADEROS_TRATAMIENTO.forEach(c => {
+        tq += Math.max(0, numero(f[c + "_TQ"]));
+        tf += Math.max(0, numero(f[c + "_TF"]));
+    });
+    return { tq, tf };
+}
+
+// La tarjeta se crea desde aqui (copiando la de "Recipientes positivos")
+// para no tener que modificar dashboard.html.
+function asegurarTarjetaTratadas() {
+    if (document.getElementById("totalTratadas")) return true;
+    const ref = document.getElementById("totalRecipientesPositivos");
+    if (!ref) return false;
+
+    // Subir hasta la tarjeta: el ultimo contenedor que todavia NO incluye
+    // la tarjeta vecina (viviendas positivas).
+    const vecina = document.getElementById("totalViviendasPositivas");
+    let card = ref;
+    while (card.parentElement && !(vecina && card.parentElement.contains(vecina))) {
+        card = card.parentElement;
+    }
+    if (!card.parentElement || !vecina) return false;
+
+    const nueva = card.cloneNode(true);
+    nueva.querySelectorAll("[id]").forEach(e => e.removeAttribute("id"));
+
+    // Cambiar textos de la copia.
+    const recorrer = document.createTreeWalker(nueva, NodeFilter.SHOW_TEXT);
+    const nodos = [];
+    while (recorrer.nextNode()) nodos.push(recorrer.currentNode);
+    nodos.forEach(n => {
+        const t = n.textContent.trim().toLowerCase();
+        if (t === "recipientes positivos") n.textContent = "Viviendas tratadas";
+        else if (t.startsWith("positividad")) n.textContent = "TQ + TF de los 10 criaderos";
+    });
+
+    // El numero: el nodo que en la original tiene el id del total.
+    const ruta = [];
+    for (let e = ref; e !== card; e = e.parentElement) {
+        ruta.unshift([...e.parentElement.children].indexOf(e));
+    }
+    let valor = nueva;
+    ruta.forEach(i => { valor = valor.children[i]; });
+    valor.id = "totalTratadas";
+    nueva.dataset.tarjeta = "tratadas";
+
+    card.parentElement.insertBefore(nueva, card.nextSibling);
+    return true;
+}
+
+function actualizarTratadas() {
+    if (!asegurarTarjetaTratadas()) return;
+    let tq = 0, tf = 0;
+    datosFiltrados.forEach(f => {
+        const r = tratamientosFila(f);
+        tq += r.tq;
+        tf += r.tf;
+    });
+    setTexto("totalTratadas", fmt(tq + tf));
+    const el = document.getElementById("totalTratadas");
+    if (el) el.title = "Tratamiento qu\u00edmico (TQ): " + fmt(tq) +
+        " \u00b7 Tratamiento f\u00edsico (TF): " + fmt(tf);
+}
+
+// ============================================================
 // COBERTURA
 // ============================================================
 
+// ------------------------------------------------------------
+// TOTAL DE VIVIENDAS POR ESTABLECIMIENTO DE SALUD (denominador de cobertura)
+// Fuente: "Total de viviendas por Establecimientos de Salud - NACIONAL.xlsx",
+// hoja Hoja1, departamento SAN MARTIN, columna TOTAL DE VIVIENDAS (solo > 0).
+// Formato: [codigo unico, distrito, establecimiento, total de viviendas].
+// Para actualizar: reemplazar las filas de esta lista.
+// ------------------------------------------------------------
+const VIVIENDAS_EESS = [
+    ["00006524", "ALTO BIAVO", "BARRANCA", 500],
+    ["00006714", "ALTO BIAVO", "CENTRO AMERICA", 190],
+    ["00035635", "ALTO BIAVO", "CHALLUAL", 275],
+    ["00006525", "ALTO BIAVO", "CUZCO", 450],
+    ["00006502", "ALTO BIAVO", "HOSPITAL BELLAVISTA II-E", 5570],
+    ["00006526", "ALTO BIAVO", "INCAICO", 270],
+    ["00006527", "ALTO BIAVO", "JOSE OLAYA", 580],
+    ["00006528", "ALTO BIAVO", "NUEVA ARICA", 260],
+    ["00006458", "BAJO BIAVO", "ALMIRANTE GRAU BOMBONAJILLO", 300],
+    ["00006521", "BAJO BIAVO", "DOS UNIDOS", 360],
+    ["00006522", "BAJO BIAVO", "LA UNION", 290],
+    ["00011491", "BAJO BIAVO", "LIBANO", 175],
+    ["00009893", "BAJO BIAVO", "NUEVO CONTROL", 230],
+    ["00006519", "BAJO BIAVO", "NUEVO LIMA", 400],
+    ["00006520", "BAJO BIAVO", "NUEVO TARAPOTO", 490],
+    ["00006523", "BAJO BIAVO", "SANTA ELENA", 180],
+    ["00011343", "BAJO BIAVO", "YANAYACU", 350],
+    ["00006503", "BELLAVISTA", "BUENOS AIRES", 150],
+    ["00006513", "BELLAVISTA", "HUACHO", 490],
+    ["00006511", "BELLAVISTA", "LAS  MERCEDES", 640],
+    ["00006505", "BELLAVISTA", "LIMON", 525],
+    ["00006512", "BELLAVISTA", "NUEVA FLORIDA", 380],
+    ["00006785", "BELLAVISTA", "PERUATE", 395],
+    ["00006565", "HUALLAGA", "AUCARARCA", 100],
+    ["00006562", "HUALLAGA", "LEDOY", 410],
+    ["00029371", "SAN PABLO", "CENTRO AMERICA - SAN PABLO", 200],
+    ["00006506", "SAN PABLO", "CONSUELO", 770],
+    ["00006509", "SAN PABLO", "DOS DE MAYO", 100],
+    ["00006499", "SAN PABLO", "FAUSA LAMISTA", 560],
+    ["00006507", "SAN PABLO", "FAUSA SAPINA", 180],
+    ["00006514", "SAN PABLO", "HUINGOYACU", 411],
+    ["00006508", "SAN PABLO", "SAN PABLO", 320],
+    ["00006518", "SAN RAFAEL", "CRISTINO GARCIA CARHUAPOMA", 510],
+    ["00006516", "SAN RAFAEL", "LA LIBERTAD", 580],
+    ["00006517", "SAN RAFAEL", "PANAMA", 100],
+    ["00006515", "SAN RAFAEL", "SAN RAFAEL", 500],
+    ["00006496", "AGUA BLANCA", "AGUA BLANCA", 702],
+    ["00006498", "AGUA BLANCA", "PACASMAYO", 131],
+    ["00006485", "SAN JOSE DE SISA", "HOSPITAL RURAL SAN JOSE DE SISA", 3746],
+    ["00006490", "SAN JOSE DE SISA", "HUAJA", 151],
+    ["00006486", "SAN JOSE DE SISA", "NAUTA", 360],
+    ["00006489", "SAN JOSE DE SISA", "SAN JUAN DE MIRAFLORES", 270],
+    ["00006487", "SAN JOSE DE SISA", "SANTA CRUZ", 950],
+    ["00007392", "SAN MARTIN", "BUENA VISTA", 95],
+    ["00007391", "SAN MARTIN", "CASHNAHUASI", 118],
+    ["00007644", "SAN MARTIN", "PACAYPAMPA", 112],
+    ["00006492", "SAN MARTIN", "SAN MARTIN DE ALAO", 1182],
+    ["00006494", "SAN MARTIN", "SINAMI", 130],
+    ["00006500", "SANTA ROSA", "BARRANQUITA RIO SISA", 323],
+    ["00035285", "SANTA ROSA", "PUESTO DE SALUD ALTO PALMERAS", 161],
+    ["00006510", "SANTA ROSA", "PUESTO DE SALUD RAMON CASTILLA", 219],
+    ["00006407", "SANTA ROSA", "SAN JUAN DE TALLIQUIHUI", 250],
+    ["00006501", "SANTA ROSA", "SANTA ELENA", 184],
+    ["00006488", "SANTA ROSA", "SANTA MARTHA", 610],
+    ["00006497", "SANTA ROSA", "SANTA ROSA", 302],
+    ["00006491", "SHATOJA", "AMINIO", 180],
+    ["00006493", "SHATOJA", "SHATOJA", 503],
+    ["00006540", "ALTO SAPOSOA", "NUEVA VIDA", 305],
+    ["00006539", "ALTO SAPOSOA", "PASARRAYA", 571],
+    ["00035728", "ALTO SAPOSOA", "PUESTO DE SALUD VALLE GRANDE", 120],
+    ["00006541", "ALTO SAPOSOA", "YACUSISA", 199],
+    ["00006544", "EL ESLABON", "COLLPA", 124],
+    ["00006542", "EL ESLABON", "EL ESLABON", 577],
+    ["00006545", "PISCOYACU", "NUEVO SACANCHE", 155],
+    ["00006533", "PISCOYACU", "PUESTO DE SALUD PISCOYACU", 706],
+    ["00027002", "SACANCHE", "LA UNION", 102],
+    ["00006543", "SACANCHE", "SACANCHE", 759],
+    ["00006530", "SAPOSOA", "7 DE JUNIO-AHUIHUA", 40],
+    ["00026163", "SAPOSOA", "AGUA AZUL", 161],
+    ["00006531", "SAPOSOA", "ALMENDRAS", 45],
+    ["00021587", "SAPOSOA", "ALTO PACHIZA", 160],
+    ["00006537", "SAPOSOA", "CHAMBIRA", 30],
+    ["00006538", "SAPOSOA", "EL DORADO", 294],
+    ["00006529", "SAPOSOA", "HOSPITAL RURAL SAPOSOA I-4", 2844],
+    ["00006536", "SAPOSOA", "INTIYACU", 40],
+    ["00006532", "SAPOSOA", "PALTAICO", 30],
+    ["00006529", "SAPOSOA", "RURAL SAPOSOA", 2844],
+    ["00006534", "SAPOSOA", "SAN ANDRES", 50],
+    ["00006535", "SAPOSOA", "SAN REGIS", 315],
+    ["00006546", "TINGO DE SAPOSOA", "TINGO DE SAPOSOA", 350],
+    ["00006350", "ALONSO DE ALVARADO", "PACAYZAPA", 768],
+    ["00006348", "ALONSO DE ALVARADO", "ROQUE", 1495],
+    ["00006432", "BARRANQUITA", "BARRANQUITA CAYNARACHI", 998],
+    ["00006433", "BARRANQUITA", "PUERTO PIZARRO", 50],
+    ["00007401", "BARRANQUITA", "SANANGO", 120],
+    ["00006435", "BARRANQUITA", "SANTA CLARA", 90],
+    ["00006450", "BARRANQUITA", "SANTA ELENA", 30],
+    ["00006434", "BARRANQUITA", "SANTIAGO DE BORJA", 1500],
+    ["00006416", "CAYNARACHI", "ALFONSO UGARTE", 410],
+    ["00006418", "CAYNARACHI", "ALIANZA", 1301],
+    ["00006419", "CAYNARACHI", "BONILLA", 480],
+    ["00006420", "CAYNARACHI", "NUEVO LAMAS", 100],
+    ["00019769", "CAYNARACHI", "NUEVO TOCACHE", 50],
+    ["00006415", "CAYNARACHI", "PONGO DEL CAYNARACHI", 823],
+    ["00006422", "CAYNARACHI", "SAN JUAN DE SHANUSI", 97],
+    ["00006417", "CAYNARACHI", "SAN MIGUEL DE ACHINAMIZA", 260],
+    ["00006421", "CAYNARACHI", "YUMBATOS", 400],
+    ["00006396", "CU\u00d1UMBUQUI", "CU\u00d1UMBUQUE", 669],
+    ["00006352", "LAMAS", "HOSPITAL II-E LAMAS", 4323],
+    ["00006353", "LAMAS", "HUAYCO LAMAS", 1039],
+    ["00006390", "LAMAS", "LAS FLORES DEL RIO MAYO", 80],
+    ["00006388", "LAMAS", "SAN ANTONIO RIO MAYO", 182],
+    ["00006410", "PINTO RECODO", "CHURUZAPA PINTO RECODO", 63],
+    ["00006344", "PINTO RECODO", "LA LIBERTAD BAJO MAYO", 300],
+    ["00006411", "PINTO RECODO", "MISHQUIYACU PINTO RECODO", 220],
+    ["00006409", "PINTO RECODO", "PINTO RECODO", 1110],
+    ["00006347", "PINTO RECODO", "VENCEDOR", 520],
+    ["00006354", "RUMISAPA", "CHIRAPA LA LIBERTAD", 80],
+    ["00006389", "RUMISAPA", "CHURUZAPA", 103],
+    ["00006392", "RUMISAPA", "MACEDA", 236],
+    ["00006393", "RUMISAPA", "PACCHILLA", 184],
+    ["00006391", "RUMISAPA", "RUMIZAPA", 726],
+    ["00006357", "SAN ROQUE DE CUMBAZA", "ALTO SHAMBOYACU", 80],
+    ["00006355", "SAN ROQUE DE CUMBAZA", "CHIRICYACU", 70],
+    ["00006356", "SAN ROQUE DE CUMBAZA", "PAMASHTO", 738],
+    ["00006386", "SAN ROQUE DE CUMBAZA", "SAN ROQUE DE CUMBAZA", 303],
+    ["00006358", "SAN ROQUE DE CUMBAZA", "YURILAMAS", 30],
+    ["00006412", "SHANAO", "SHANAO", 590],
+    ["00006414", "TABALOSOS", "PUCAYACU PANJUI", 200],
+    ["00006413", "TABALOSOS", "SAN MIGUEL DEL RIO MAYO", 844],
+    ["00006408", "TABALOSOS", "TABALOSOS", 3762],
+    ["00006394", "ZAPATERO", "SANTA ANA DEL RIO MAYO", 75],
+    ["00006399", "ZAPATERO", "ZAPATERO", 457],
+    ["00006576", "CAMPANILLA", "BALZAYACU", 313],
+    ["00006575", "CAMPANILLA", "CAMPANILLA", 1241],
+    ["00006566", "CAMPANILLA", "CU\u00d1UMBUZA", 631],
+    ["00006579", "CAMPANILLA", "NUEVO JAEN", 311],
+    ["00006715", "CAMPANILLA", "PERLAMAYO", 142],
+    ["00006577", "CAMPANILLA", "SHUMANZA", 197],
+    ["00006578", "CAMPANILLA", "SION", 303],
+    ["00006568", "HUICUNGO", "DOS DE MAYO", 299],
+    ["00006567", "HUICUNGO", "HUICUNGO", 1328],
+    ["00006556", "HUICUNGO", "MIRAFLORES", 183],
+    ["00006570", "HUICUNGO", "NUEVA ESPERANZA", 60],
+    ["00006571", "HUICUNGO", "PIZARRO", 120],
+    ["00006569", "HUICUNGO", "SANTA INES", 102],
+    ["00006555", "HUICUNGO", "SHEPTE", 125],
+    ["00006551", "JUANJUI", "CAYENA", 149],
+    ["00006919", "JUANJUI", "HOSPITAL JUANJUI", 9550],
+    ["00006553", "JUANJUI", "HUAYABAMBA", 78],
+    ["00006552", "JUANJUI", "HUINGUILLO", 81],
+    ["00006549", "JUANJUI", "LA VICTORIA", 425],
+    ["00006550", "JUANJUI", "QUINILLA", 57],
+    ["00006554", "JUANJUI", "VILLA PRADO", 204],
+    ["00006573", "PACHIZA", "ALTO EL SOL", 120],
+    ["00006557", "PACHIZA", "BAGAZAN", 448],
+    ["00006574", "PACHIZA", "NUEVO CHIMBOTE", 147],
+    ["00006572", "PACHIZA", "PACHIZA", 394],
+    ["00006558", "PACHIZA", "SAN JUAN DEL CA\u00d1O", 94],
+    ["00006559", "PACHIZA", "SAN RAMON", 104],
+    ["00006560", "PAJARILLO", "ARMAYARI", 99],
+    ["00006563", "PAJARILLO", "COSTA RICA", 302],
+    ["00006564", "PAJARILLO", "DOS UNIDOS", 72],
+    ["00006561", "PAJARILLO", "PAJARILLO", 1007],
+    ["00006783", "PAJARILLO", "SOLEDAD", 61],
+    ["00006326", "CALZADA", "CALZADA", 1560],
+    ["00006327", "HABANA", "CENTRO DE SALUD HABANA", 1533],
+    ["00006341", "JEPELACIO", "CENTRO DE SALUD JERILLO", 755],
+    ["00006349", "JEPELACIO", "CENTRO DE SALUD LA HUARPIA", 315],
+    ["00006337", "JEPELACIO", "JEPELACIO", 1380],
+    ["00006346", "JEPELACIO", "RAMIREZ", 214],
+    ["00006339", "JEPELACIO", "SHUCSHUYACU", 923],
+    ["00006295", "MOYOBAMBA", "DORADA", 155],
+    ["00006292", "MOYOBAMBA", "IMPERIO DE CACHIYACU", 150],
+    ["00006312", "MOYOBAMBA", "LLUYLLUCUCHA", 18477],
+    ["00006313", "MOYOBAMBA", "MARONA", 329],
+    ["00006322", "MOYOBAMBA", "PUEBLO LIBRE", 1153],
+    ["00006282", "MOYOBAMBA", "PUESTO DE SALUD LA CONQUISTA", 1200],
+    ["00006293", "MOYOBAMBA", "RAFAEL BELAUNDE", 180],
+    ["00006296", "MOYOBAMBA", "SAN JOSE DE ALTO MAYO", 250],
+    ["00006336", "SORITOR", "PUESTO DE SALUD SAN MARCOS", 537],
+    ["00006332", "SORITOR", "SORITOR", 8380],
+    ["00006318", "YANTALO", "YANTALO", 833],
+    ["00006463", "BUENOS AIRES", "BUENOS AIRES", 432],
+    ["00006465", "BUENOS AIRES", "PAUJILZAPA", 100],
+    ["00006376", "BUENOS AIRES", "SAN CRISTOBAL DE UPAQUIHUA", 70],
+    ["00006466", "BUENOS AIRES", "STA. ROSILLO DE UPAQUIHUA", 70],
+    ["00006471", "CASPIZAPA", "CASPIZAPA", 640],
+    ["00006459", "PICOTA", "BARRANQUITA PICOTA", 120],
+    ["00006457", "PICOTA", "HOSPITAL RURAL  PICOTA", 2650],
+    ["00006460", "PICOTA", "SANTA ROSILLO PICOTA", 100],
+    ["00006461", "PICOTA", "WINGE", 182],
+    ["00006469", "PILLUANA", "MISHQUIYACU", 100],
+    ["00006468", "PILLUANA", "PILLUANA", 120],
+    ["00006464", "PUCACACA", "CEDRO PAMPA", 100],
+    ["00006462", "PUCACACA", "PUCACACA", 550],
+    ["00006474", "SAN CRISTOBAL", "PUERTO RICO", 517],
+    ["00006473", "SAN HILARION", "NUEVA ESPERANZA", 70],
+    ["00006472", "SAN HILARION", "NUEVO EGIPTO", 150],
+    ["00006470", "SAN HILARION", "SAN CRISTOBAL DE SISA", 1090],
+    ["00006479", "SHAMBOYACU", "ALFONSO UGARTE", 285],
+    ["00006902", "SHAMBOYACU", "NUEVO LORETO", 300],
+    ["00006477", "SHAMBOYACU", "SHAMBOYACU", 480],
+    ["00006480", "SHAMBOYACU", "SIMON BOLIVAR", 88],
+    ["00006478", "SHAMBOYACU", "VISTA ALEGRE", 80],
+    ["00006482", "TINGO DE PONASA", "AYPENA", 60],
+    ["00006476", "TINGO DE PONASA", "HUA\u00d1IPO", 80],
+    ["00006475", "TINGO DE PONASA", "LEONCIO PRADO", 290],
+    ["00006483", "TINGO DE PONASA", "MARISCAL CASTILLA", 100],
+    ["00006481", "TINGO DE PONASA", "TINGO DE PONAZA", 310],
+    ["00006467", "TRES UNIDOS", "TRES UNIDOS", 600],
+    ["00006297", "AWAJUN", "BAJO NARANJILLO", 894],
+    ["00009075", "AWAJUN", "NUEVA SANTA CRUZ", 200],
+    ["00007464", "AWAJUN", "SAN CARLOS", 215],
+    ["00006298", "AWAJUN", "SAN FRANCISCO ALTO MAYO", 784],
+    ["00006277", "ELIAS SOPLIN VARGAS", "CENTRO DE SALUD SEGUNDA JERUSALEN", 6364],
+    ["00007298", "ELIAS SOPLIN VARGAS", "PUESTO DE SALUD LA NACIENTE DEL RIO NEGRO", 330],
+    ["00017707", "ELIAS SOPLIN VARGAS", "PUESTO DE SALUD LA VICTORIA", 55],
+    ["00006279", "ELIAS SOPLIN VARGAS", "PUESTO DE SALUD PUERTO BAGAZAN", 84],
+    ["00006903", "ELIAS SOPLIN VARGAS", "PUESTO DE SALUD SANTA FE", 80],
+    ["00006278", "ELIAS SOPLIN VARGAS", "PUESTO DE SALUD VALLE GRANDE", 280],
+    ["00006300", "NUEVA CAJAMARCA", "CENTRO DE SALUD SAN JUAN RIO SORITOR", 553],
+    ["00006283", "NUEVA CAJAMARCA", "HOSPITAL RURAL NUEVA CAJAMARCA", 16372],
+    ["00006289", "NUEVA CAJAMARCA", "MIRAFLORES", 400],
+    ["00006301", "NUEVA CAJAMARCA", "NARANJILLO", 2685],
+    ["00006286", "NUEVA CAJAMARCA", "PALESTINA", 170],
+    ["00006284", "NUEVA CAJAMARCA", "PUESTO DE SALUD LA FLORIDA", 380],
+    ["00006285", "NUEVA CAJAMARCA", "PUESTO DE SALUD LA UNION", 837],
+    ["00006299", "NUEVA CAJAMARCA", "PUESTO DE SALUD PERLA DAGUAS", 189],
+    ["00006302", "NUEVA CAJAMARCA", "PUESTO DE SALUD TUPAC AMARU", 100],
+    ["00006287", "NUEVA CAJAMARCA", "TAHUANTINSUYO", 119],
+    ["00006288", "NUEVA CAJAMARCA", "UCRANIA", 331],
+    ["00006304", "PARDO MIGUEL", "AGUAS CLARAS", 458],
+    ["00006303", "PARDO MIGUEL", "CENTRO DE SALUD NARANJOS", 2581],
+    ["00006306", "PARDO MIGUEL", "EL MIRADOR", 308],
+    ["00006310", "PARDO MIGUEL", "PERLA DEL MAYO", 22],
+    ["00006307", "PARDO MIGUEL", "PIONEROS BAJO (SAN JUAN DEL MAYO)", 275],
+    ["00006305", "PARDO MIGUEL", "PUESTO DE SALUD AGUAS VERDES", 656],
+    ["00006308", "PARDO MIGUEL", "PUESTO DE SALUD SAN AGUSTIN", 166],
+    ["00006309", "PARDO MIGUEL", "PUESTO DE SALUD TUMBARO", 296],
+    ["00006274", "POSIC", "PUESTO DE SALUD POSIC", 1287],
+    ["00006270", "RIOJA", "CENTRO DE SALUD NUEVA RIOJA", 10833],
+    ["00006708", "RIOJA", "PUESTO DE SALUD LA PERLA DE CASCAYUNGA", 30],
+    ["00006271", "RIOJA", "PUESTO DE SALUD MASHUYACU", 15],
+    ["00006280", "RIOJA", "PUESTO DE SALUD PORVENIR", 1198],
+    ["00006273", "RIOJA", "PUESTO DE SALUD TAMBO", 350],
+    ["00006290", "SAN FERNANDO", "CENTRO DE SALUD SAN FERNANDO", 930],
+    ["00006294", "SAN FERNANDO", "PERLA MAYO", 120],
+    ["00006275", "YORONGOS", "CENTRO DE SALUD YORONGOS", 986],
+    ["00006276", "YORONGOS", "PUESTO DE SALUD NUEVO TABALOSOS", 45],
+    ["00006281", "YURACYACU", "YURACYACU", 1459],
+    ["00006383", "ALBERTO LEVEAU", "MACHUNGO", 128],
+    ["00006382", "ALBERTO LEVEAU", "UTCURARCA", 297],
+    ["00006395", "CACATACHI", "CACATACHI", 1800],
+    ["00006423", "CHAZUTA", "CHAZUTA", 1842],
+    ["00006451", "EL PORVENIR", "PELEJO", 1033],
+    ["00006437", "HUIMBAYOC", "HUIMBAYOC", 1764],
+    ["00006444", "HUIMBAYOC", "SANTA ROSILLO CHIPURANA", 842],
+    ["00006374", "JUAN GUERRA", "JUAN GUERRA", 1849],
+    ["00006359", "LA BANDA DE SHILCAYO", "BANDA SHILCAYO", 20742],
+    ["00006366", "LA BANDA DE SHILCAYO", "LAS PALMAS", 786],
+    ["00006361", "MORALES", "MORALES", 18074],
+    ["00006449", "PAPAPLAYA", "HOSPITAL RURAL DE PAPAPLAYA", 785],
+    ["00006387", "SAN ANTONIO", "AUCALOMA", 136],
+    ["00006384", "SAN ANTONIO", "SAN ANTONIO DE CUMBAZA", 853],
+    ["00006385", "SAN ANTONIO", "SAN PEDRO DE CUMBAZA", 385],
+    ["00006380", "SAUCE", "SAUCE", 2650],
+    ["00006375", "SHAPAJA", "SHAPAJA", 726],
+    ["00006362", "TARAPOTO", "CENTRO DE SALUD NUEVE DE ABRIL", 7588],
+    ["00006371", "TARAPOTO", "HUAYCO TARAPOTO", 4492],
+    ["00006363", "TARAPOTO", "PUESTO DE SALUD ATUMPAMPA", 4213],
+    ["00006370", "TARAPOTO", "PUNTA DEL ESTE", 8886],
+    ["00006587", "NUEVO PROGRESO", "CENTRO DE SALUD NUEVO  PROGRESO", 1797],
+    ["00006591", "NUEVO PROGRESO", "CENTRO DE SALUD RAMAL DE ASPUZANA", 471],
+    ["00034415", "NUEVO PROGRESO", "PUESTO DE SALUD LAS PALMERAS", 272],
+    ["00006590", "NUEVO PROGRESO", "PUESTO DE SALUD MADRE MIA", 168],
+    ["00006593", "NUEVO PROGRESO", "PUESTO DE SALUD PUERTO RICO", 127],
+    ["00034416", "NUEVO PROGRESO", "PUESTO DE SALUD RIO BLANCO", 256],
+    ["00006589", "NUEVO PROGRESO", "PUESTO DE SALUD RIO UCHIZA", 337],
+    ["00006592", "NUEVO PROGRESO", "PUESTO DE SALUD SANTA CRUZ", 441],
+    ["00006597", "POLVORA", "CENTRO DE SALUD NUEVO HORIZONTE", 595],
+    ["00006623", "POLVORA", "PUERTO PIZANA", 575],
+    ["00006786", "POLVORA", "PUESTO DE SALUD CEDRO", 79],
+    ["00006596", "POLVORA", "PUESTO DE SALUD CHALLUAYACU", 128],
+    ["00006626", "POLVORA", "PUESTO DE SALUD NUEVO SAN MARTIN", 248],
+    ["00006624", "POLVORA", "PUESTO DE SALUD POLVORA", 305],
+    ["00006625", "POLVORA", "PUESTO DE SALUD SANTA ROSA DE MISHOLLO", 258],
+    ["00035262", "POLVORA", "PUESTO DE SALUD SARGENTO LORES DE BALZAYACU", 351],
+    ["00006602", "SANTA LUC\u00cdA", "SANTA LUCIA", 1234],
+    ["00006586", "SHUNTE", "PUESTO DE SALUD SHUNTE", 142],
+    ["00006580", "TOCACHE", "HOSPITAL II-1 \"DR. JOSE PE\u00d1A PORTUGUEZ \" - TOCACHE", 6675],
+    ["00006581", "TOCACHE", "NUEVA ESPERANZA", 145],
+    ["00006594", "TOCACHE", "NUEVO BAMBAMARCA", 778],
+    ["00006598", "TOCACHE", "PUESTO DE SALUD ISHANGA", 110],
+    ["00006622", "TOCACHE", "PUESTO DE SALUD SAN CRISTOBAL", 91],
+    ["00006595", "TOCACHE", "PUESTO DE SALUD TANANTA", 643],
+    ["00006582", "TOCACHE", "PUSHURUMBO", 52],
+    ["00006584", "TOCACHE", "YACUSISA", 125],
+    ["00006600", "UCHIZA", "CAJATAMBO", 127],
+    ["00006621", "UCHIZA", "CRUZ PAMPA", 158],
+    ["00006601", "UCHIZA", "HUICTE", 173],
+    ["00015152", "UCHIZA", "JORGE CHAVEZ", 177],
+    ["00006604", "UCHIZA", "PAMPAYACU", 224],
+    ["00006603", "UCHIZA", "PUESTO DE SALUD EL PORVENIR", 165],
+    ["00006588", "UCHIZA", "PUESTO DE SALUD NUEVO PORONGO", 523],
+    ["00017706", "UCHIZA", "SAN JUAN DE DIOS", 25],
+    ["00006585", "UCHIZA", "SANTA ROSA DE SHAPAJA", 426],
+    ["00006599", "UCHIZA", "UCHIZA", 3318]
+];
+
+// "CENTRO DE SALUD NUEVE DE ABRIL", "C.S. Nueve de Abril", "Nueve de Abril" -> "NUEVE DE ABRIL"
+function claveEess(valor) {
+    return texto(valor).toUpperCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .replace(/\(.*?\)/g, " ")
+        .replace(/[^A-Z0-9]+/g, " ")
+        .replace(/\b(CENTRO DE SALUD|PUESTO DE SALUD|HOSPITAL RURAL DE|HOSPITAL RURAL|CS|PS|C S|P S|I [1-4])\b/g, " ")
+        .replace(/\b(DE|DEL|LA|EL|LOS|LAS)\b/g, " ")
+        .replace(/\s+/g, " ").trim();
+}
+
+let indiceViviendasEess = null;
+
+// Busca el total de viviendas de una localidad (establecimiento) del CSV.
+// Primero por distrito + nombre (hay nombres repetidos en otros distritos);
+// si no hay distrito, por nombre cuando es unico en el departamento.
+function totalViviendasEess(localidad, distrito) {
+    if (!indiceViviendasEess) {
+        indiceViviendasEess = { porDistrito: {}, porNombre: {} };
+        VIVIENDAS_EESS.forEach(([, dist, nombre, total]) => {
+            const kn = claveEess(nombre);
+            indiceViviendasEess.porDistrito[claveEess(dist) + "|" + kn] = total;
+            const pn = indiceViviendasEess.porNombre;
+            pn[kn] = (kn in pn) ? null : total; // null = nombre repetido
+        });
+    }
+    const kn = claveEess(localidad);
+    const kd = claveEess(distrito) + "|" + kn;
+    if (kd in indiceViviendasEess.porDistrito) return indiceViviendasEess.porDistrito[kd];
+    const t = indiceViviendasEess.porNombre[kn];
+    if (t !== undefined) return t;
+
+    // Nombre incompleto ("Huayco" -> "HUAYCO TARAPOTO"): todas las palabras
+    // de uno estan en el otro, dentro del mismo distrito y sin ambiguedad.
+    const pal = new Set(kn.split(" ").filter(Boolean));
+    // Si la localidad se llama igual que el distrito, no se adivina.
+    if (!pal.size || kn === claveEess(distrito)) return null;
+    const prefijo = claveEess(distrito) + "|";
+    const candidatos = Object.keys(indiceViviendasEess.porDistrito).filter(c => {
+        if (!c.startsWith(prefijo)) return false;
+        const otras = new Set(c.slice(prefijo.length).split(" ").filter(Boolean));
+        const [menor, mayor] = pal.size <= otras.size ? [pal, otras] : [otras, pal];
+        return [...menor].every(w => mayor.has(w));
+    });
+    return candidatos.length === 1 ? indiceViviendasEess.porDistrito[candidatos[0]] : null;
+}
+
+let avisoSinTotal = "";
+
 function actualizarCobertura() {
-    const inspeccionadasTotal =
-        datosFiltrados.filter(inspeccionada).length;
+    // Cobertura = viviendas inspeccionadas / total de viviendas de los
+    // establecimientos (localidades) que aparecen con los filtros actuales.
+    // Las localidades sin total de viviendas no entran al calculo.
+    const porLocalidad = {};
+    datosFiltrados.forEach(f => {
+        const loc = texto(f.localidad_eess);
+        if (!loc) return;
+        if (!porLocalidad[loc]) porLocalidad[loc] = { insp: 0, dist: texto(f.distrito) };
+        if (inspeccionada(f)) porLocalidad[loc].insp++;
+    });
 
-    const viviendasBase = new Set(
-        datosFiltrados.map(f => texto(f._uid)).filter(Boolean)
-    ).size;
+    let inspeccionadasTotal = 0;
+    let viviendasBase = 0;
+    const sinTotal = [];
+    Object.entries(porLocalidad).forEach(([loc, v]) => {
+        const total = totalViviendasEess(loc, v.dist);
+        if (!total) { sinTotal.push(loc); return; }
+        viviendasBase += total;
+        inspeccionadasTotal += v.insp;
+    });
 
-    const porcentaje = viviendasBase > 0
-        ? Number(Math.min(
-            100,
-            (inspeccionadasTotal / viviendasBase) * 100
-        ).toFixed(1))
+    const aviso = sinTotal.sort().join(", ");
+    if (aviso && aviso !== avisoSinTotal) {
+        console.warn("Localidades sin total de viviendas (no entran a la cobertura):", aviso);
+    }
+    avisoSinTotal = aviso;
+
+    const porcentajeReal = viviendasBase > 0
+        ? Number(((inspeccionadasTotal / viviendasBase) * 100).toFixed(1))
         : 0;
+    // El grafico y la barra se topan en 100; el numero muestra el valor real.
+    const porcentaje = Math.min(100, porcentajeReal);
 
-    setTexto("coveragePercent", porcentaje + "%");
+    setTexto("coveragePercent", porcentajeReal + "%");
+    const notaCob = document.getElementById("coverageTotal");
+    if (notaCob) notaCob.title = avisoSinTotal
+        ? "Sin total de viviendas (no se cuentan): " + avisoSinTotal : "";
     setTexto("coverageInspeccionadas", fmt(inspeccionadasTotal));
     setTexto("coverageTotal", fmt(viviendasBase));
 
@@ -1085,11 +1548,12 @@ function graficoBarras(id, etiquetas, valores, etiquetaSerie, color, horizontal)
     });
 }
 
-function agruparInspeccionadas(campo, vacio) {
+function agruparInspeccionadas(campo, vacio, normalizar) {
     const grupos = {};
 
     datosFiltrados.filter(inspeccionada).forEach(fila => {
-        const clave = texto(fila[campo]) || vacio;
+        const valor = texto(fila[campo]);
+        const clave = (valor && normalizar ? normalizar(valor) : valor) || vacio;
         grupos[clave] = (grupos[clave] || 0) + 1;
     });
 
@@ -1118,48 +1582,52 @@ function actualizarCondicion() {
 }
 
 function actualizarRanking() {
-    const camposCriaderos = {
-        "Tanque alto": ["tanque_alto_I", "tanque_alto_P", "tanque_alto_TQ", "tanque_alto_TF"],
-        "Tanque bajo": ["tanque_bajo_I", "tanque_bajo_P", "tanque_bajo_TQ", "tanque_bajo_TF"],
-        "Barril": ["barril_cilindro_I", "barril_cilindro_P", "barril_cilindro_TQ", "barril_cilindro_TF"],
-        "Sanson / Bidón": ["sanson_bidon_I", "sanson_bidon_P", "sanson_bidon_TQ", "sanson_bidon_TF"],
-        "Baldes": ["baldes_bateas_tinajas_I", "baldes_bateas_tinajas_P", "baldes_bateas_tinajas_TQ", "baldes_bateas_tinajas_TF"],
-        "Llantas": ["llantas_I", "llantas_P", "llantas_TQ", "llantas_TF"],
-        "Floreros": ["floreros_maceteros_I", "floreros_maceteros_P", "floreros_maceteros_TQ", "floreros_maceteros_TF"],
-        "Latas": ["latas_botellas_I", "latas_botellas_P", "latas_botellas_TQ", "latas_botellas_TF"],
-        "Otros": ["otros_I", "otros_P", "otros_TQ", "otros_TF", "otros_D"],
-        "Inservibles": ["inservibles_I", "inservibles_P", "inservibles_TQ", "inservibles_TF"]
-    };
+    // Por tipo de criadero: recipientes inspeccionados (_I) y positivos (_P),
+    // en dos barras. Ya no se suman tratados ni destruidos (TQ, TF, D), que
+    // contaban el mismo recipiente varias veces. Solo viviendas inspeccionadas.
+    const tipos = [
+        ["Tanque alto", "tanque_alto"],
+        ["Tanque bajo", "tanque_bajo"],
+        ["Barril", "barril_cilindro"],
+        ["Sanson / Bid\u00f3n", "sanson_bidon"],
+        ["Baldes", "baldes_bateas_tinajas"],
+        ["Llantas", "llantas"],
+        ["Floreros", "floreros_maceteros"],
+        ["Latas", "latas_botellas"],
+        ["Inservibles", "inservibles"],
+        ["Otros", "otros"]
+    ];
 
-    const ranking = Object.keys(camposCriaderos)
-        .map(nombre => {
-            let total = 0;
-
-            datosFiltrados.forEach(fila => {
-                camposCriaderos[nombre].forEach(campo => {
-                    total += numero(fila[campo]);
-                });
-            });
-
-            return { nombre, total };
-        })
-        .sort((a, b) => b.total - a.total)
-        .slice(0, 10);
+    const ranking = tipos.map(([nombre, campo]) => ({ nombre, insp: 0, pos: 0 }));
+    datosFiltrados.forEach(fila => {
+        if (!inspeccionada(fila)) return;
+        tipos.forEach(([, campo], k) => {
+            ranking[k].insp += Math.max(0, numero(fila[campo + "_I"]));
+            ranking[k].pos += Math.max(0, numero(fila[campo + "_P"]));
+        });
+    });
+    ranking.sort((a, b) => (b.insp - a.insp) || (b.pos - a.pos));
 
     crearGrafico("rankingChart", {
         type: "bar",
         data: {
             labels: ranking.map(x => x.nombre),
-            datasets: [{
-                label: "Total",
-                data: ranking.map(x => x.total),
-                backgroundColor: [
-                    "#ed4149", "#168fe0", "#38a947", "#f1ad18", "#7438a4",
-                    "#e85aa5", "#7c8790", "#55aee8", "#1598aa", "#7bcfd8"
-                ],
-                borderRadius: 5,
-                borderSkipped: false
-            }]
+            datasets: [
+                {
+                    label: "Inspeccionados",
+                    data: ranking.map(x => x.insp),
+                    backgroundColor: "#5dade2",
+                    borderRadius: 4,
+                    borderSkipped: false
+                },
+                {
+                    label: "Positivos",
+                    data: ranking.map(x => x.pos),
+                    backgroundColor: "#ed4149",
+                    borderRadius: 4,
+                    borderSkipped: false
+                }
+            ]
         },
         options: {
             indexAxis: "y",
@@ -1167,10 +1635,16 @@ function actualizarRanking() {
             maintainAspectRatio: false,
             animation: false,
             plugins: {
-                legend: { display: false },
+                legend: { display: true, position: "top" },
                 tooltip: {
                     callbacks: {
-                        label: c => " Total: " + fmt(c.raw)
+                        label: c => " " + c.dataset.label + ": " + fmt(c.raw),
+                        afterBody: items => {
+                            const x = ranking[items[0].dataIndex];
+                            return x.insp > 0
+                                ? "Positividad: " + (x.pos / x.insp * 100).toFixed(1) + " %"
+                                : "";
+                        }
                     }
                 }
             },
@@ -1203,7 +1677,7 @@ function actualizarMensual() {
 }
 
 function actualizarSector() {
-    const o = agruparInspeccionadas("sector", "Sin sector");
+    const o = agruparInspeccionadas("sector", "Sin sector", sectorNormalizado);
 
     graficoBarras(
         "sectorChart", o.map(x => x[0]), o.map(x => x[1]),
