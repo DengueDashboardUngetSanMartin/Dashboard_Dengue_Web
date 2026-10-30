@@ -956,6 +956,7 @@ function actualizarDashboard() {
     seguro("ranking", actualizarRanking);
     seguro("mensual", actualizarMensual);
     seguro("sector", actualizarSector);
+    seguro("tendencia", actualizarTendencia);
     seguro("localidad", actualizarLocalidad);
     seguro("tabla", actualizarTabla);
     seguro("mapa", actualizarMapa);
@@ -2111,6 +2112,20 @@ function crearGrafico(id, configuracion) {
 // TABLA POR LOCALIDAD
 // ============================================================
 
+// Agrega (una sola vez) las columnas IA, IR, IB y Grado al encabezado.
+function agregarEncabezadosIndices(tbody) {
+    const tabla = tbody.closest("table");
+    const fila = tabla && tabla.querySelector("thead tr");
+    if (!fila || fila.dataset.indices) return;
+    const modelo = fila.lastElementChild;
+    ["IA (%)", "IR (%)", "IB", "Grado"].forEach(t => {
+        const th = modelo ? modelo.cloneNode(false) : document.createElement("th");
+        th.textContent = t;
+        fila.appendChild(th);
+    });
+    fila.dataset.indices = "1";
+}
+
 function actualizarTabla() {
     const tbody = document.getElementById("tablaLocalidades");
     if (!tbody) return;
@@ -2128,11 +2143,17 @@ function actualizarTabla() {
                 deshabitadas: 0,
                 recuperadas: 0,
                 positivas: 0,
-                recipientesPositivos: 0
+                recipientesPositivos: 0,
+                recipientesInspeccionados: 0
             };
         }
 
-        if (inspeccionada(fila)) localidades[loc].inspeccionadas++;
+        if (inspeccionada(fila)) {
+            localidades[loc].inspeccionadas++;
+            CRIADEROS_TRATAMIENTO.forEach(c => {
+                localidades[loc].recipientesInspeccionados += Math.max(0, numero(fila[c + "_I"]));
+            });
+        }
         if (cerrada(fila)) localidades[loc].cerradas++;
         if (renuente(fila)) localidades[loc].renuentes++;
         if (deshabitada(fila)) localidades[loc].deshabitadas++;
@@ -2146,7 +2167,8 @@ function actualizarTabla() {
         if (!localidades[loc]) {
             localidades[loc] = {
                 inspeccionadas: 0, cerradas: 0, renuentes: 0, deshabitadas: 0,
-                recuperadas: 0, positivas: 0, recipientesPositivos: 0
+                recuperadas: 0, positivas: 0, recipientesPositivos: 0,
+                recipientesInspeccionados: 0
             };
         }
 
@@ -2154,6 +2176,7 @@ function actualizarTabla() {
     });
 
     tbody.innerHTML = "";
+    agregarEncabezadosIndices(tbody);
 
     Object.entries(localidades)
         .sort((a, b) => b[1].inspeccionadas - a[1].inspeccionadas)
@@ -2176,8 +2199,311 @@ function actualizarTabla() {
                 tr.appendChild(td);
             });
 
+            // Indices de la localidad: IA, IR, IB y grado (con color).
+            const ia = v.inspeccionadas ? v.positivas / v.inspeccionadas * 100 : null;
+            const ir = v.recipientesInspeccionados ? v.recipientesPositivos / v.recipientesInspeccionados * 100 : null;
+            const ib = v.inspeccionadas ? v.recipientesPositivos / v.inspeccionadas * 100 : null;
+            [ia, ir, ib].forEach(x => {
+                const td = document.createElement("td");
+                td.textContent = x === null ? "-" : x.toFixed(2);
+                tr.appendChild(td);
+            });
+            const tdG = document.createElement("td");
+            if (ia !== null) {
+                const g = gradoInfestacion(ia);
+                tdG.textContent = g;
+                tdG.style.color = "#fff";
+                tdG.style.fontWeight = "700";
+                tdG.style.background = COLOR_GRADO[g];
+            } else {
+                tdG.textContent = "-";
+            }
+            tr.appendChild(tdG);
+
             tbody.appendChild(tr);
         });
+}
+
+// ============================================================
+// (1) TENDENCIA DEL INDICE AEDICO POR SEMANA
+// Panel nuevo creado desde aqui (copia del panel "por mes"), a todo lo ancho.
+// Semana = lunes a domingo, segun la fecha de cada vivienda (fecha_creacion).
+// ============================================================
+function asegurarPanelTendencia() {
+    if (document.getElementById("tendenciaChart")) return true;
+    const mensual = document.getElementById("monthlyChart");
+    const sector = document.getElementById("sectorChart");
+    if (!mensual || !sector) return false;
+
+    // Panel del grafico mensual: ultimo contenedor que no incluye el de sector.
+    let panel = mensual;
+    while (panel.parentElement && !panel.parentElement.contains(sector)) panel = panel.parentElement;
+    const fila = panel.parentElement;
+    if (!fila) return false;
+
+    const nuevo = panel.cloneNode(true);
+    nuevo.querySelectorAll("[id]").forEach(e => e.removeAttribute("id"));
+    const rec = document.createTreeWalker(nuevo, NodeFilter.SHOW_TEXT);
+    while (rec.nextNode()) {
+        const n = rec.currentNode;
+        if (/inspeccionadas por mes/i.test(n.textContent)) {
+            n.textContent = n.textContent.replace(/viviendas inspeccionadas por mes/i,
+                "Tendencia del \u00edndice a\u00e9dico (IA) por semana");
+        }
+    }
+    // Lienzo nuevo en lugar de la copia del grafico mensual.
+    const viejo = nuevo.querySelector("canvas");
+    const lienzo = document.createElement("canvas");
+    lienzo.id = "tendenciaChart";
+    if (viejo) viejo.replaceWith(lienzo); else nuevo.appendChild(lienzo);
+
+    nuevo.style.gridColumn = "1 / -1";
+    nuevo.style.flex = "1 1 100%";
+    nuevo.style.maxWidth = "100%";
+
+    // Despues del ultimo panel de la misma fila visual (el de sector).
+    let ancla = sector;
+    while (ancla.parentElement && ancla.parentElement !== fila) ancla = ancla.parentElement;
+    fila.insertBefore(nuevo, ancla.parentElement === fila ? ancla.nextSibling : panel.nextSibling);
+    return true;
+}
+
+function lunesDe(fecha) {
+    const d = new Date(fecha.getFullYear(), fecha.getMonth(), fecha.getDate());
+    const dia = (d.getDay() + 6) % 7; // lunes = 0
+    d.setDate(d.getDate() - dia);
+    return d;
+}
+
+function actualizarTendencia() {
+    if (!asegurarPanelTendencia()) return;
+
+    const sem = {};
+    datosFiltrados.forEach(f => {
+        if (!inspeccionada(f)) return;
+        const fecha = fechaVivienda(f);
+        if (!fecha) return;
+        const k = fechaLocalISO(lunesDe(fecha));
+        if (!sem[k]) sem[k] = { insp: 0, pos: 0 };
+        sem[k].insp++;
+        if (viviendaPositiva(f)) sem[k].pos++;
+    });
+    const claves = Object.keys(sem).sort();
+    const etiqueta = k => {
+        const [a, m, d] = k.split("-");
+        return d + "/" + m;
+    };
+    const ia = claves.map(k => Number((sem[k].pos / sem[k].insp * 100).toFixed(2)));
+
+    crearGrafico("tendenciaChart", {
+        type: "bar",
+        data: {
+            labels: claves.map(etiqueta),
+            datasets: [
+                { type: "line", label: "\u00cdndice a\u00e9dico (%)", data: ia, yAxisID: "yIA",
+                  borderColor: "#e53935", backgroundColor: "#e53935", tension: 0.25,
+                  pointRadius: 3, order: 0 },
+                { type: "line", label: "Umbral ALTO (2 %)", data: claves.map(() => 2), yAxisID: "yIA",
+                  borderColor: "#e08a00", borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5, order: 1 },
+                { type: "bar", label: "Viviendas inspeccionadas", data: claves.map(k => sem[k].insp),
+                  yAxisID: "yViv", backgroundColor: "rgba(117,188,231,0.55)", borderRadius: 3, order: 2 }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            interaction: { mode: "index", intersect: false },
+            plugins: {
+                legend: { display: true, position: "top" },
+                tooltip: {
+                    callbacks: {
+                        title: items => "Semana del " + etiqueta(claves[items[0].dataIndex]),
+                        afterBody: items => {
+                            const v = sem[claves[items[0].dataIndex]];
+                            const x = v.pos / v.insp * 100;
+                            return "Positivas: " + fmt(v.pos) + " \u00b7 Grado: " + gradoInfestacion(x);
+                        }
+                    }
+                }
+            },
+            scales: {
+                yIA: { position: "left", beginAtZero: true,
+                       title: { display: true, text: "IA (%)" } },
+                yViv: { position: "right", beginAtZero: true, grid: { drawOnChartArea: false },
+                        title: { display: true, text: "Viviendas" },
+                        ticks: { callback: v => fmt(v) } }
+            }
+        }
+    });
+}
+
+// ============================================================
+// (3) PENDIENTES DE RECUPERACION: cerradas y renuentes no recuperadas
+// ============================================================
+function clonarBoton(refId, nuevoId, textoBoton, accion) {
+    if (document.getElementById(nuevoId)) return;
+    const ref = document.getElementById(refId);
+    if (!ref) return;
+    const b = ref.cloneNode(true);
+    b.id = nuevoId;
+    // Conservar el icono (si lo hay) y cambiar solo el texto.
+    const nodos = [];
+    const rec = document.createTreeWalker(b, NodeFilter.SHOW_TEXT);
+    while (rec.nextNode()) if (rec.currentNode.textContent.trim()) nodos.push(rec.currentNode);
+    if (nodos.length) {
+        // Conservar el icono inicial (emoji) si viene en el mismo texto.
+        const ultimo = nodos[nodos.length - 1];
+        const icono = (ultimo.textContent.match(/^[^A-Za-z\u00c0-\u00ff]*/) || [""])[0];
+        ultimo.textContent = (icono.trim() ? icono : " ") + textoBoton;
+        nodos.slice(0, -1).forEach(n => { if (/[a-z]{3}/i.test(n.textContent)) n.textContent = ""; });
+    } else {
+        b.textContent = textoBoton;
+    }
+    b.onclick = accion;
+    ref.insertAdjacentElement("afterend", b);
+    return b;
+}
+
+function descargarPendientesRecuperacion() {
+    aplicarFiltros();
+    const ESTADO = { "2": "Cerrada", "3": "Renuente" };
+    // En Dengue-Admin la recuperacion suele quedar como un registro NUEVO
+    // (inspeccionada) en la misma direccion, no en la fila de la cerrada.
+    // Por eso una cerrada/renuente se da por recuperada si, en toda la base,
+    // hay una inspeccion posterior con la misma direccion y manzana.
+    const claveCasa = f => texto(f.direccion).toLowerCase().replace(/[^a-z0-9\u00f1]+/g, "") +
+        "|" + texto(f.codigo_manzana).toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const ultimaInspeccion = new Map();
+    datosOriginales.forEach(f => {
+        if (!inspeccionada(f) || !texto(f.direccion)) return;
+        const k = claveCasa(f);
+        const t = texto(f.fecha_creacion) || texto(f.fecha_inspeccion);
+        if (!ultimaInspeccion.has(k) || t > ultimaInspeccion.get(k)) ultimaInspeccion.set(k, t);
+    });
+    const yaRecuperada = f => {
+        if (recuperada(f)) return true;
+        if (!texto(f.direccion)) return false;
+        const t = texto(f.fecha_creacion) || texto(f.fecha_inspeccion);
+        const u = ultimaInspeccion.get(claveCasa(f));
+        return !!u && u > t;
+    };
+
+    const filas = datosFiltrados
+        .filter(f => (cerrada(f) || renuente(f)) && !yaRecuperada(f))
+        .sort((a, b) =>
+            texto(a.localidad_eess).localeCompare(texto(b.localidad_eess)) ||
+            (Number(sectorNormalizado(a.sector)) - Number(sectorNormalizado(b.sector))) ||
+            texto(a.codigo_manzana).localeCompare(texto(b.codigo_manzana), "es", { numeric: true }) ||
+            texto(a.direccion).localeCompare(texto(b.direccion)));
+
+    const datos = filas.map((f, i) => {
+        const c = coordenadas(f);
+        return {
+            "#": i + 1,
+            "Estado": ESTADO[texto(f.atencion_vivienda_indicador)] || "",
+            "Fecha de registro": (texto(f.fecha_creacion) || texto(f.fecha_inspeccion)).slice(0, 10),
+            "Localidad": texto(f.localidad_eess),
+            "Sector": sectorNormalizado(f.sector),
+            "Manzana": texto(f.codigo_manzana),
+            "Direcci\u00f3n": texto(f.direccion),
+            "Referencia": texto(f.referencia),
+            "Inspector que la registr\u00f3": texto(f.nombre_inspector),
+            "Tipo de inspecci\u00f3n": texto(f.tipoActividadInspeccion),
+            "Latitud": c ? c[0] : "",
+            "Longitud": c ? c[1] : "",
+            "Ver en Google Maps": c ? "https://maps.google.com/?q=" + c[0] + "," + c[1] : ""
+        };
+    });
+
+    if (!datos.length) {
+        alert("No hay viviendas cerradas o renuentes pendientes de recuperar con los filtros actuales.");
+        return;
+    }
+    descargarExcelSeguro(datos, "Pendientes_recuperacion_" + fechaLocalISO(new Date()));
+}
+
+// ============================================================
+// (6) REPORTE PARA IMPRIMIR O GUARDAR EN PDF
+// Abre una ventana con el resumen de los filtros actuales y la imprime.
+// ============================================================
+function generarReporte() {
+    actualizarDashboard();
+    const F = leerFiltros();
+    const v = id => { const e = document.getElementById(id); return e ? e.textContent.trim() : "-"; };
+    const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[c]));
+
+    const filtros = [
+        ["Localidad", F.localidad], ["Sector", F.sector], ["Tipo de inspecci\u00f3n", F.tipo],
+        ["Inspector", F.inspector], ["Manzana", F.manzana], ["Mes", F.mes],
+        ["Desde", F.fechaInicio || "-"], ["Hasta", F.fechaFin || "-"]
+    ].map(([k, x]) => "<b>" + k + ":</b> " + esc(x)).join(" &nbsp;\u00b7&nbsp; ");
+
+    const tarjetas = [
+        ["Viviendas inspeccionadas", "totalInspeccionadas"], ["Cerradas", "totalCerradas"],
+        ["Renuentes", "totalRenuentes"], ["Deshabitadas", "totalDeshabitadas"],
+        ["Recuperadas", "totalRecuperadas"], ["Inspectores", "totalInspectores"],
+        ["Viviendas positivas", "totalViviendasPositivas"], ["Recipientes positivos", "totalRecipientesPositivos"],
+        ["Viviendas tratadas", "totalTratadas"], ["\u00cdndice a\u00e9dico (IA)", "indiceAedico"],
+        ["\u00cdndice de recipientes (IR)", "indiceRecipientes"], ["\u00cdndice de Breteau (IB)", "indiceBreteau"],
+        ["Cobertura", "coveragePercent"], ["Total viviendas", "coverageTotal"],
+        ["Viviendas programadas (vigilancia)", "coverageProgramadas"]
+    ].filter(([, id]) => document.getElementById(id))
+     .map(([t, id]) => "<div class='t'><div class='n'>" + esc(v(id)) + "</div><div class='l'>" + t + "</div></div>")
+     .join("");
+
+    const grado = v("indiceAedicoSub");
+
+    const graficos = [
+        ["Viviendas por condici\u00f3n", "conditionChart"],
+        ["Recipientes inspeccionados y positivos por tipo de criadero", "rankingChart"],
+        ["Viviendas inspeccionadas y positivas por sector", "sectorChart"],
+        ["Tendencia del \u00edndice a\u00e9dico por semana", "tendenciaChart"],
+        ["Viviendas inspeccionadas por localidad", "localityChart"]
+    ].map(([t, id]) => {
+        const c = document.getElementById(id);
+        if (!c || !charts[id]) return "";
+        let img = "";
+        try { img = c.toDataURL("image/png"); } catch (e) { return ""; }
+        return "<div class='g'><h3>" + t + "</h3><img src='" + img + "'></div>";
+    }).join("");
+
+    const tbody = document.getElementById("tablaLocalidades");
+    const tabla = tbody ? tbody.closest("table").outerHTML : "";
+
+    const html = "<!DOCTYPE html><html lang='es'><head><meta charset='utf-8'>" +
+        "<title>Reporte de inspecciones de dengue</title><style>" +
+        "body{font-family:Arial,Helvetica,sans-serif;color:#1d2b33;margin:18px;font-size:12px}" +
+        "h1{font-size:18px;margin:0;color:#0b7f95}h2{font-size:13px;margin:14px 0 6px;color:#0b7f95}" +
+        "h3{font-size:12px;margin:0 0 4px}.sub{color:#5a6b74;margin:2px 0 8px}" +
+        ".f{background:#eef6f8;padding:6px 8px;border-radius:4px}" +
+        ".ts{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}" +
+        ".t{border:1px solid #d5e3e8;border-radius:4px;padding:6px}.n{font-size:16px;font-weight:700}" +
+        ".l{color:#5a6b74;font-size:10px}.gr{font-weight:700;margin-top:6px}" +
+        ".gs{display:grid;grid-template-columns:1fr 1fr;gap:10px}.g img{width:100%;border:1px solid #e3ecef}" +
+        "table{border-collapse:collapse;width:100%;font-size:10px}th,td{border:1px solid #cfdce3;padding:3px 4px;text-align:center}" +
+        "th{background:#0b7f95;color:#fff}td:first-child{text-align:left}" +
+        "@media print{body{margin:8mm}.g,.t,tr{break-inside:avoid}}" +
+        "</style></head><body>" +
+        "<h1>Reporte de inspecciones y control de dengue</h1>" +
+        "<div class='sub'>Generado el " + esc(new Date().toLocaleString("es-PE")) + "</div>" +
+        "<div class='f'>" + filtros + "</div>" +
+        "<h2>Indicadores</h2><div class='ts'>" + tarjetas + "</div>" +
+        (grado && grado !== "-" ? "<div class='gr'>" + esc(grado) + "</div>" : "") +
+        "<h2>Gr\u00e1ficos</h2><div class='gs'>" + graficos + "</div>" +
+        (tabla ? "<h2>Detalle por localidad</h2>" + tabla : "") +
+        "</body></html>";
+
+    const w = window.open("", "_blank");
+    if (!w) {
+        alert("El navegador bloque\u00f3 la ventana del reporte. Permite las ventanas emergentes para este sitio.");
+        return;
+    }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    w.onload = () => setTimeout(() => w.print(), 300);
+    setTimeout(() => { try { w.print(); } catch (e) {} }, 1200);
 }
 
 // ============================================================
@@ -2579,6 +2905,13 @@ function configurarBotones() {
 
     const rec = document.getElementById("btnExcelRecuperadas");
     if (rec) rec.onclick = descargarRecuperadas;
+
+    // Botones nuevos (copias del de recuperadas, creados desde aqui).
+    clonarBoton("btnExcelRecuperadas", "btnExcelPendientes",
+        "Descargar pendientes de recuperaci\u00f3n", descargarPendientesRecuperacion);
+    const bRep = clonarBoton("btnExcelPendientes", "btnReporte",
+        "Imprimir reporte / PDF", generarReporte);
+    if (bRep) { bRep.style.background = "#455a64"; bRep.style.borderColor = "#455a64"; }
 }
 
 function obtenerDatosParaDescarga() {
