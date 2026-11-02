@@ -717,6 +717,14 @@ function actualizarFecha() {
 // FILTRO POR RANGO DE FECHAS
 // ============================================================
 
+function ponerRangoHoy() {
+    const hoy = fechaLocalISO(new Date());
+    const fechaInicio = document.getElementById("fechaInicio");
+    const fechaFin = document.getElementById("fechaFin");
+    if (fechaInicio) fechaInicio.value = hoy;
+    if (fechaFin) fechaFin.value = hoy;
+}
+
 function ponerRangoHoyManana() {
     const fechaInicio = document.getElementById("fechaInicio");
     const fechaFin = document.getElementById("fechaFin");
@@ -761,7 +769,7 @@ function configurarRangoFechas() {
         btnLimpiarFecha.dataset.configurado !== "true") {
 
         btnLimpiarFecha.addEventListener("click", function () {
-            ponerRangoHoyManana();
+            ponerRangoHoy();
             actualizarDashboard();
         });
 
@@ -817,15 +825,10 @@ function inicializarFiltros(primeraCarga = true) {
     llenarSelect("filtroManzana", valoresUnicos("codigo_manzana"), "Todas");
     llenarSelect("filtroMes", MESES, "Todos");
 
-    // Dejar las fechas vacías al iniciar el dashboard.
-    const fechaInicio = document.getElementById("fechaInicio");
-    const fechaFin = document.getElementById("fechaFin");
-
-    // En las actualizaciones automáticas se respeta el rango elegido.
-    if (primeraCarga) {
-        if (fechaInicio) fechaInicio.value = "";
-        if (fechaFin) fechaFin.value = "";
-    }
+    // Al abrir la pagina, el rango de fechas es el dia de hoy
+    // (fecha inicial = fecha final = hoy).
+    // En las actualizaciones automaticas se respeta el rango elegido.
+    if (primeraCarga) ponerRangoHoy();
 
     configurarRangoFechas();
 
@@ -1591,6 +1594,11 @@ function ordenarCuadrosCobertura(cont) {
     cont.style.height = "auto";
     cont.style.overflow = "visible";
     [...cont.children].forEach(c => {
+        // Se quita el recuadro "Meta anual".
+        if (c.querySelector("#coverageProgress") || /meta anual/i.test(c.textContent)) {
+            c.style.display = "none";
+            return;
+        }
         c.style.margin = "0";
         c.style.minWidth = "0";
         c.style.boxSizing = "border-box";
@@ -1679,21 +1687,103 @@ function modificarProgramadas() {
 }
 
 // Boton "Modificar" junto al numero (se crea una sola vez).
-function asegurarBotonModificar() {
-    const valor = document.getElementById("coverageProgramadas");
-    if (!valor || document.getElementById("btnModificarProgramadas")) return;
+// Boton "Modificar" en la esquina del recuadro de un valor (una sola vez).
+function crearBotonModificar(valorId, btnId, accion) {
+    const valor = document.getElementById(valorId);
+    if (!valor || document.getElementById(btnId)) return;
     const b = document.createElement("button");
-    b.id = "btnModificarProgramadas";
+    b.id = btnId;
     b.type = "button";
     b.textContent = "\u270e Modificar";
     b.style.cssText = "position:absolute;top:6px;right:6px;font-size:10px;" +
         "line-height:1.4;padding:1px 6px;border:1px solid #269bb0;" +
-        "border-radius:4px;background:#fff;color:#078ca5;cursor:pointer;";
-    b.addEventListener("click", modificarProgramadas);
-    // En la esquina superior derecha del recuadro, sin mover los textos.
-    const caja = valor.closest("[data-caja=\"programadas\"]") || valor.parentElement;
+        "border-radius:4px;background:#fff;color:#078ca5;cursor:pointer;z-index:2;";
+    b.addEventListener("click", accion);
+    // Caja: el ultimo contenedor del valor que no incluye otro recuadro.
+    const otro = document.getElementById(valorId === "coverageTotal" ? "coverageInspeccionadas" : "coverageTotal");
+    let caja = valor;
+    while (caja.parentElement && !(otro && caja.parentElement.contains(otro))) caja = caja.parentElement;
     caja.style.position = "relative";
     caja.appendChild(b);
+}
+
+function asegurarBotonModificar() {
+    crearBotonModificar("coverageProgramadas", "btnModificarProgramadas", modificarProgramadas);
+    crearBotonModificar("coverageTotal", "btnModificarTotal", modificarTotalViviendas);
+}
+
+// ------------------------------------------------------------
+// TOTAL DE VIVIENDAS MODIFICADO A MANO (igual que las programadas)
+// 1) Para todos: escribirlo aqui. Ej.:  "PUNTA DEL ESTE": 9000,
+//    Sirve tambien para localidades que no estan en el Excel de viviendas.
+// 2) Desde la pagina: boton "Modificar" del recuadro "Total viviendas base"
+//    (filtrando una sola localidad). Se guarda solo en ese navegador.
+// Las viviendas programadas se recalculan con el total modificado,
+// salvo que tambien se hayan modificado a mano.
+// ------------------------------------------------------------
+const TOTALES_FIJOS = {
+};
+
+const CLAVE_TOTAL_LOCAL = "dengue_total_viviendas";
+
+function leerTotalesLocales() {
+    try {
+        return JSON.parse(localStorage.getItem(CLAVE_TOTAL_LOCAL) || "{}") || {};
+    } catch (e) {
+        return {};
+    }
+}
+
+// Devuelve { valor, origen } con el total de viviendas de una localidad.
+function totalDe(localidad, distrito) {
+    const k = claveEess(localidad);
+    const locales = leerTotalesLocales();
+    if (locales[k] > 0) return { valor: locales[k], origen: "modificado en este navegador" };
+    for (const [nombre, v] of Object.entries(TOTALES_FIJOS)) {
+        if (claveEess(nombre) === k && v > 0) return { valor: v, origen: "fijado en script.js" };
+    }
+    const t = totalViviendasEess(localidad, distrito);
+    return { valor: t || 0, origen: t ? "Excel de viviendas" : "sin dato" };
+}
+
+// Todas las localidades visibles con los filtros (tengan total o no).
+let locsVisiblesCobertura = [];
+
+function modificarTotalViviendas() {
+    if (locsVisiblesCobertura.length !== 1) {
+        alert("Para modificar el total de viviendas, filtra una sola localidad.");
+        return;
+    }
+    const { loc, dist } = locsVisiblesCobertura[0];
+    const actual = totalDe(loc, dist);
+    const delExcel = totalViviendasEess(loc, dist);
+    const resp = prompt(
+        "Total de viviendas para " + loc + ".\n" +
+        "Seg\u00fan el Excel: " + (delExcel || "sin dato") + ". Actual: " + (actual.valor || "sin dato") +
+        " (" + actual.origen + ").\n\n" +
+        "Escribe el nuevo valor, o deja vac\u00edo para volver al del Excel:",
+        actual.valor ? String(actual.valor) : ""
+    );
+    if (resp === null) return;
+
+    const locales = leerTotalesLocales();
+    const k = claveEess(loc);
+    const n = parseInt(String(resp).replace(/[^0-9]/g, ""), 10);
+    if (String(resp).trim() === "") {
+        delete locales[k];
+    } else if (!n || n <= 0) {
+        alert("Escribe un n\u00famero mayor que cero.");
+        return;
+    } else {
+        locales[k] = n;
+    }
+    try {
+        localStorage.setItem(CLAVE_TOTAL_LOCAL, JSON.stringify(locales));
+    } catch (e) {
+        alert("Este navegador no permite guardar el cambio.");
+        return;
+    }
+    actualizarCobertura();
 }
 
 // Cambia el texto bajo el porcentaje de la dona segun el tipo filtrado y
@@ -1748,9 +1838,13 @@ function actualizarCobertura() {
     const programadasModificadas = [];
     const locsConTotal = [];
     const sinTotal = [];
+    const totalesModificados = [];
+    locsVisiblesCobertura = Object.entries(porLocalidad).map(([loc, v]) => ({ loc, dist: v.dist }));
     Object.entries(porLocalidad).forEach(([loc, v]) => {
-        const total = totalViviendasEess(loc, v.dist);
+        const tot = totalDe(loc, v.dist);
+        const total = tot.valor;
         if (!total) { sinTotal.push(loc); return; }
+        if (tot.origen !== "Excel de viviendas") totalesModificados.push(loc + " (" + tot.origen + ")");
         viviendasBase += total;
         const prog = programadasDe(loc, total);
         programadasVigilancia += prog.valor;
@@ -1781,8 +1875,10 @@ function actualizarCobertura() {
     setTexto("coveragePercent", porcentajeReal + "%");
     rotularCobertura(esVigilancia, tipoSel, inspeccionadasTotal, denominador);
     const notaCob = document.getElementById("coverageTotal");
-    if (notaCob) notaCob.title = avisoSinTotal
-        ? "Sin total de viviendas (no se cuentan): " + avisoSinTotal : "";
+    if (notaCob) notaCob.title = [
+        totalesModificados.length ? "Modificados a mano: " + totalesModificados.join(", ") : "",
+        avisoSinTotal ? "Sin total de viviendas (no se cuentan): " + avisoSinTotal : ""
+    ].filter(Boolean).join("\n");
     setTexto("coverageInspeccionadas", fmt(inspeccionadasTotal));
     setTexto("coverageTotal", fmt(viviendasBase));
 
