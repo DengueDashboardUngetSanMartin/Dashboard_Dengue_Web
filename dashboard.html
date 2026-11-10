@@ -55,6 +55,25 @@
     <link rel="stylesheet"
           href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
     <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- Agrupacion de puntos (clusters) y mapa de calor -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+    <script defer src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+    <script defer src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+    <style>
+        .cluster-viv { background: rgba(7, 140, 165, 0.25); border-radius: 50%; }
+        .cluster-viv div { width: 100%; height: 100%; border-radius: 50%; background: rgba(7, 140, 165, 0.85);
+            color: #fff; font-weight: bold; display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 0 0 4px rgba(7, 140, 165, 0.25); }
+        .mapa-controles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; font-size: 12px; }
+        .mapa-controles label { display: flex; align-items: center; gap: 5px; font-weight: bold; color: #263746; cursor: pointer; }
+        .mapa-controles select { height: 30px; padding: 4px 6px; border: 1px solid #cbd8df; border-radius: 6px; font-size: 12px; }
+        .mapa-leyenda { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; font-size: 12px; }
+        .mapa-leyenda span.ley { background: #f3f7f9; border: 1px solid #dce6eb; border-radius: 14px; padding: 3px 10px; }
+        .mapa-leyenda span.pt { font-size: 14px; }
+        #mapaTotal { font-size: 11px; color: #555; margin: 6px 2px 0; font-style: italic; }
+    </style>
 </head>
 
 <body>
@@ -611,6 +630,23 @@
                 🗺️ Viviendas inspeccionadas por localidad
             </div>
 
+            <div class="mapa-controles">
+                <label><input type="checkbox" id="mapaCalor"> &#128293; Mapa de calor</label>
+                <select id="mapaCalorModo" title="Qu&#233; representa el mapa de calor">
+                    <option value="cobertura">Cobertura (todas las viviendas)</option>
+                    <option value="positivas">Viviendas positivas</option>
+                    <option value="intensidad">Intensidad (recipientes positivos)</option>
+                </select>
+            </div>
+
+            <div class="mapa-leyenda">
+                <span class="ley"><span class="pt" style="color:#e53935">&#9679;</span> Positivas</span>
+                <span class="ley"><span class="pt" style="color:#1e6fff">&#9679;</span> Inspeccionadas</span>
+                <span class="ley"><span class="pt" style="color:#111111">&#9679;</span> Cerradas</span>
+                <span class="ley"><span class="pt" style="color:#8e24aa">&#9679;</span> Renuentes</span>
+                <span class="ley"><span class="pt" style="color:#f57c00">&#9679;</span> Deshabitadas</span>
+            </div>
+
             <div id="map"
                  style="
                     width: 100%;
@@ -618,6 +654,8 @@
                     border-radius: 8px;
                  ">
             </div>
+
+            <p id="mapaTotal"></p>
 
         </div>
 
@@ -698,7 +736,7 @@
          CARGAR JAVASCRIPT DEL DASHBOARD
     ====================================================== -->
 
-    <script defer src="script.js?v=20261110a"></script>
+    <script defer src="script.js?v=20261110b"></script>
 
 </body>
 </html>
