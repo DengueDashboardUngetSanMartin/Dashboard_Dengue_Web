@@ -769,7 +769,9 @@ function configurarRangoFechas() {
         btnLimpiarFecha.dataset.configurado !== "true") {
 
         btnLimpiarFecha.addEventListener("click", function () {
-            ponerRangoHoy();
+            // Restablecer: vaciar ambas fechas y mostrar todo el periodo
+            if (fechaInicio) fechaInicio.value = "";
+            if (fechaFin) fechaFin.value = "";
             actualizarDashboard();
         });
 
