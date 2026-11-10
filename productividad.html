@@ -6,7 +6,7 @@
 <title>Productividad por inspector - Dengue</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <style>
 :root{--teal:#138a9e;--teal-d:#0d6b7c;--teal-l:#d8f1f5;--bg:#eef3f6;--card:#fff;--txt:#1f2d3a;--mut:#6b7a88;--line:#dde5ea;
 --azul:#3d8fd6;--rojo:#e5484d;--naranja:#f08a24;--morado:#7b4fc9;--verde:#2fa84f;--amarillo:#f3b300}
@@ -82,7 +82,7 @@ tfoot td{position:sticky;bottom:0;background:#e3eef2;font-weight:700;border-top:
       <div><label for="fHasta">&#128197; Fecha de inspecci&#243;n hasta</label><input type="date" id="fHasta"></div>
       <div><label for="fLoc">&#128205; Localidad</label><select id="fLoc"></select></div>
       <div><label for="fInsp">&#128100; Inspector</label><select id="fInsp"></select></div>
-      <div><button class="btn" type="button" id="btnLimpiar">&#8634; Limpiar filtros</button></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" type="button" id="btnRestFechas">&#8634; Restablecer fechas</button><button class="btn claro" type="button" id="btnLimpiar">&#10006; Limpiar filtros</button></div>
     </div>
     <div class="acciones">
       <button class="btn verde" type="button" id="btnExcel">&#11015; Descargar reporte en Excel</button>

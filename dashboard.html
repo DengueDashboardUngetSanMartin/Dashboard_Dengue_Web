@@ -700,5 +700,24 @@
 
     <script defer src="script.js?v=20261029a"></script>
 
+    <!-- Restablecer fechas: vacia ambas fechas y muestra todo el periodo -->
+    <script>
+    (function () {
+        window.addEventListener('click', function (e) {
+            var btn = e.target && e.target.closest ? e.target.closest('#btnLimpiarFecha') : null;
+            if (!btn) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            ['fechaInicio', 'fechaFin'].forEach(function (id) {
+                var el = document.getElementById(id);
+                if (!el) return;
+                el.value = '';
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+        }, true);
+    })();
+    </script>
+
 </body>
 </html>
