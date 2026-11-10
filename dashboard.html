@@ -56,23 +56,21 @@
           href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
     <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
-    <!-- Agrupacion de puntos (clusters) y mapa de calor -->
+    <!-- Agrupación de puntos (círculos con número) y mapa de calor -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
     <script defer src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
     <script defer src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+
     <style>
-        .cluster-viv { background: rgba(7, 140, 165, 0.25); border-radius: 50%; }
-        .cluster-viv div { width: 100%; height: 100%; border-radius: 50%; background: rgba(7, 140, 165, 0.85);
-            color: #fff; font-weight: bold; display: flex; align-items: center; justify-content: center;
-            box-shadow: 0 0 0 4px rgba(7, 140, 165, 0.25); }
-        .mapa-controles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; font-size: 12px; }
-        .mapa-controles label { display: flex; align-items: center; gap: 5px; font-weight: bold; color: #263746; cursor: pointer; }
-        .mapa-controles select { height: 30px; padding: 4px 6px; border: 1px solid #cbd8df; border-radius: 6px; font-size: 12px; }
-        .mapa-leyenda { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; font-size: 12px; }
-        .mapa-leyenda span.ley { background: #f3f7f9; border: 1px solid #dce6eb; border-radius: 14px; padding: 3px 10px; }
-        .mapa-leyenda span.pt { font-size: 14px; }
-        #mapaTotal { font-size: 11px; color: #555; margin: 6px 2px 0; font-style: italic; }
+        .mapa-barra { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:0 0 8px; font-size:12px; }
+        .mapa-chip { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:6px; border:1px solid #e1e7ec; background:#fff; }
+        .mapa-chip i { width:8px; height:8px; border-radius:50%; display:inline-block; }
+        .mapa-total { margin-left:auto; color:#555; }
+        .mapa-calor { display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none; }
+        .cluster-viv { background:transparent; }
+        .cluster-viv div { width:100%; height:100%; border-radius:50%; background:#0000f0; color:#fff;
+            display:flex; align-items:center; justify-content:center; font-weight:600;
+            font-family:Arial, sans-serif; box-shadow:0 0 0 3px rgba(0,0,240,.18); }
     </style>
 </head>
 
@@ -630,21 +628,20 @@
                 🗺️ Viviendas inspeccionadas por localidad
             </div>
 
-            <div class="mapa-controles">
-                <label><input type="checkbox" id="mapaCalor"> &#128293; Mapa de calor</label>
-                <select id="mapaCalorModo" title="Qu&#233; representa el mapa de calor">
-                    <option value="cobertura">Cobertura (todas las viviendas)</option>
+            <div class="mapa-barra">
+                <span class="mapa-chip"><i style="background:#e53935"></i>Positivas</span>
+                <span class="mapa-chip"><i style="background:#1e6fff"></i>Inspeccionadas</span>
+                <span class="mapa-chip"><i style="background:#111"></i>Cerradas</span>
+                <span class="mapa-chip"><i style="background:#8e24aa"></i>Renuentes</span>
+                <span class="mapa-chip"><i style="background:#f57c00"></i>Deshabitadas</span>
+                <label class="mapa-calor"><input type="checkbox" id="mapaCalor"> Mapa de calor</label>
+                <select id="mapaCalorModo" title="Qué representa el mapa de calor"
+                        style="font-size:12px; padding:2px 6px; border:1px solid #cfdce3; border-radius:6px;">
+                    <option value="cobertura">Cobertura de inspección</option>
                     <option value="positivas">Viviendas positivas</option>
-                    <option value="intensidad">Intensidad (recipientes positivos)</option>
+                    <option value="intensidad">Intensidad de infestación</option>
                 </select>
-            </div>
-
-            <div class="mapa-leyenda">
-                <span class="ley"><span class="pt" style="color:#e53935">&#9679;</span> Positivas</span>
-                <span class="ley"><span class="pt" style="color:#1e6fff">&#9679;</span> Inspeccionadas</span>
-                <span class="ley"><span class="pt" style="color:#111111">&#9679;</span> Cerradas</span>
-                <span class="ley"><span class="pt" style="color:#8e24aa">&#9679;</span> Renuentes</span>
-                <span class="ley"><span class="pt" style="color:#f57c00">&#9679;</span> Deshabitadas</span>
+                <span class="mapa-total" id="mapaTotal"></span>
             </div>
 
             <div id="map"
@@ -654,8 +651,6 @@
                     border-radius: 8px;
                  ">
             </div>
-
-            <p id="mapaTotal"></p>
 
         </div>
 
@@ -736,7 +731,7 @@
          CARGAR JAVASCRIPT DEL DASHBOARD
     ====================================================== -->
 
-    <script defer src="script.js?v=20261110b"></script>
+    <script defer src="script.js?v=20261110a"></script>
 
 </body>
 </html>
