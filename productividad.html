@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Productividad por inspector - Dengue</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{--teal:#138a9e;--teal-d:#0d6b7c;--teal-l:#d8f1f5;--bg:#eef3f6;--card:#fff;--txt:#1f2d3a;--mut:#6b7a88;--line:#dde5ea;
+--azul:#3d8fd6;--rojo:#e5484d;--naranja:#f08a24;--morado:#7b4fc9;--verde:#2fa84f;--amarillo:#f3b300}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--txt);font-size:14px}
+.top{display:flex;align-items:center;gap:16px;background:linear-gradient(90deg,#e9f6f9 0,#9fd3de 30%,var(--teal) 70%,var(--teal-d) 100%);padding:10px 20px;min-height:84px}
+.top img{height:62px;background:#fff;border-radius:6px;padding:4px}
+.top .tt{flex:1;text-align:center;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.35)}
+.top h1{margin:0;font-size:24px;letter-spacing:.5px;text-transform:uppercase;font-weight:800}
+.top p{margin:2px 0 0;font-size:13px}
+.top .acc{display:flex;gap:8px}
+.wrap{padding:14px 16px 30px;max-width:1900px;margin:0 auto}
+.box{background:var(--card);border-radius:10px;box-shadow:0 1px 3px rgba(20,40,60,.08);padding:14px}
+.filtros{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;align-items:end}
+.filtros label{display:block;font-weight:600;font-size:13px;margin-bottom:5px}
+.filtros select,.filtros input{width:100%;padding:8px 10px;border:1px solid #c9d4db;border-radius:6px;font:inherit;background:#fff}
+.btn{border:0;border-radius:6px;padding:9px 14px;font:inherit;font-weight:600;color:#fff;background:var(--teal);cursor:pointer;white-space:nowrap}
+.btn:hover{filter:brightness(1.08)}
+.btn.verde{background:var(--verde)}.btn.gris{background:#4b5966}.btn.claro{background:#fff;color:var(--teal-d);border:1px solid var(--teal)}
+.acciones{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.nota{color:var(--mut);font-size:12px;font-style:italic;margin-top:10px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-top:12px}
+.card{background:var(--card);border-radius:10px;box-shadow:0 1px 3px rgba(20,40,60,.08);padding:14px;display:flex;gap:12px;align-items:center}
+.ico{width:44px;height:44px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:22px;flex:none}
+.card .l{font-size:13px;font-weight:600}
+.card .v{font-size:24px;font-weight:700;margin:2px 0}
+.card .s{font-size:11px;color:var(--mut)}
+.g2{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:12px;margin-top:12px}
+.panel{background:var(--card);border-radius:10px;box-shadow:0 1px 3px rgba(20,40,60,.08);overflow:hidden;min-width:0}
+.panel h2{margin:0;background:var(--teal);color:#fff;font-size:15px;padding:9px 14px}
+.panel .in{padding:12px}
+.cv{position:relative;height:420px}
+.thead{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:10px}
+.thead input{padding:8px 10px;border:1px solid #c9d4db;border-radius:6px;font:inherit;min-width:240px}
+.tw{overflow:auto;max-height:640px;border:1px solid var(--line);border-radius:6px}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th{position:sticky;top:0;background:var(--teal-d);color:#fff;font-size:12px;padding:8px;text-align:right;cursor:pointer;white-space:nowrap;user-select:none}
+th.l,td.l{text-align:left}
+th .ar{opacity:.8;margin-left:3px}
+td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+tbody tr:nth-child(even){background:#f6f9fb}
+tbody tr:hover{background:var(--teal-l);cursor:pointer}
+tbody tr.sel{background:#ffe9b3}
+tfoot td{position:sticky;bottom:0;background:#e3eef2;font-weight:700;border-top:2px solid var(--teal)}
+.alto{color:var(--rojo);font-weight:700}
+.vacio{padding:30px;text-align:center;color:var(--mut)}
+#carga{position:fixed;inset:0;background:rgba(238,243,246,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:50;gap:12px}
+#carga .bar{width:min(420px,80vw);height:10px;background:#d4e2e8;border-radius:6px;overflow:hidden}
+#carga .bar div{height:100%;width:0;background:var(--teal);transition:width .2s}
+#carga.err{color:var(--rojo)}
+@media (max-width:700px){.top h1{font-size:17px}.top img{height:44px}.g2{grid-template-columns:1fr}.cv{height:360px}}
+@media print{.top .acc,.acciones,.filtros button,#carga,.thead input{display:none!important}body{background:#fff}.tw{max-height:none;overflow:visible}th{position:static}.panel,.box,.card{box-shadow:none;border:1px solid #ccc}.cv{height:300px}}
+</style>
+</head>
+<body>
+<div id="carga"><div style="font-size:40px">&#129439;</div><div id="cargaTxt">Cargando datos de inspecciones&#8230;</div><div class="bar"><div id="cargaBar"></div></div></div>
+
+<header class="top">
+  <img src="img/logo.png" alt="Logo" onerror="this.style.display='none'">
+  <div class="tt">
+    <h1>Productividad por inspector</h1>
+    <p>Viviendas atendidas por inspector seg&#250;n tipo de actividad, mes, fecha de inspecci&#243;n y localidad</p>
+  </div>
+  <div class="acc"><button class="btn claro" type="button" onclick="window.close()">&#10006; Cerrar ventana</button></div>
+</header>
+
+<div class="wrap">
+  <section class="box">
+    <div class="filtros">
+      <div><label for="fAct">&#129514; Tipo de actividad</label><select id="fAct"></select></div>
+      <div><label for="fMes">&#128197; Mes</label><select id="fMes"></select></div>
+      <div><label for="fDesde">&#128197; Fecha de inspecci&#243;n desde</label><input type="date" id="fDesde"></div>
+      <div><label for="fHasta">&#128197; Fecha de inspecci&#243;n hasta</label><input type="date" id="fHasta"></div>
+      <div><label for="fLoc">&#128205; Localidad</label><select id="fLoc"></select></div>
+      <div><label for="fInsp">&#128100; Inspector</label><select id="fInsp"></select></div>
+      <div><button class="btn" type="button" id="btnLimpiar">&#8634; Limpiar filtros</button></div>
+    </div>
+    <div class="acciones">
+      <button class="btn verde" type="button" id="btnExcel">&#11015; Descargar reporte en Excel</button>
+      <button class="btn gris" type="button" onclick="window.print()">&#128424; Imprimir reporte / PDF</button>
+    </div>
+    <div class="nota" id="nota">Cada vivienda registrada cuenta como atendida (incluidas las cerradas revisitadas). La fecha usada es la fecha de inspecci&#243;n.</div>
+  </section>
+
+  <section class="cards">
+    <div class="card"><div class="ico" style="background:#2b6cb0">&#128101;</div><div><div class="l">Inspectores activos</div><div class="v" id="kInsp">&#8212;</div><div class="s">con al menos una vivienda</div></div></div>
+    <div class="card"><div class="ico" style="background:var(--teal)">&#127960;</div><div><div class="l">Viviendas atendidas</div><div class="v" id="kViv">&#8212;</div><div class="s"><span id="kFichas">&#8212;</span> fichas de inspecci&#243;n</div></div></div>
+    <div class="card"><div class="ico" style="background:var(--azul)">&#127968;</div><div><div class="l">Viviendas inspeccionadas</div><div class="v" id="kIns">&#8212;</div><div class="s"><span id="kInsPct">&#8212;</span> de las atendidas</div></div></div>
+    <div class="card"><div class="ico" style="background:var(--rojo)">&#128274;</div><div><div class="l">Cerradas</div><div class="v" id="kCer">&#8212;</div><div class="s"><span id="kRen">&#8212;</span> renuentes &#183; <span id="kDes">&#8212;</span> deshabitadas</div></div></div>
+    <div class="card"><div class="ico" style="background:var(--naranja)">&#129439;</div><div><div class="l">Viviendas positivas</div><div class="v" id="kPos">&#8212;</div><div class="s">&#205;ndice a&#233;dico <b id="kIA">&#8212;</b></div></div></div>
+    <div class="card"><div class="ico" style="background:var(--verde)">&#128200;</div><div><div class="l">Promedio por inspector/d&#237;a</div><div class="v" id="kProm">&#8212;</div><div class="s">viviendas atendidas por d&#237;a trabajado</div></div></div>
+  </section>
+
+  <section class="g2">
+    <div class="panel"><h2>&#127942; Ranking TOP 15 de inspectores</h2><div class="in"><div class="cv"><canvas id="chTop"></canvas></div></div></div>
+    <div class="panel"><h2 id="tDiaria">&#128202; Producci&#243;n diaria</h2><div class="in"><div class="cv"><canvas id="chDia"></canvas></div></div></div>
+  </section>
+
+  <section class="panel" style="margin-top:12px">
+    <h2>&#128203; Reporte de productividad por inspector</h2>
+    <div class="in">
+      <div class="thead">
+        <div><b id="nFilas">0</b> inspectores &#183; toca una fila para filtrar por ese inspector &#183; toca un encabezado para ordenar</div>
+        <input type="search" id="buscar" placeholder="&#128270; Buscar inspector&#8230;">
+      </div>
+      <div class="tw">
+        <table id="tabla">
+          <thead><tr>
+            <th data-k="n">N&#176;</th><th class="l" data-k="inspector">Inspector</th><th data-k="dias">D&#237;as trab.</th><th data-k="fichas">Fichas</th>
+            <th data-k="viviendas">Viv. atendidas</th><th data-k="inspeccionadas">Inspecc.</th><th data-k="cerradas">Cerradas</th>
+            <th data-k="renuentes">Renuentes</th><th data-k="deshabitadas">Deshab.</th><th data-k="positivas">Positivas</th>
+            <th data-k="ia">&#205;. a&#233;dico</th><th data-k="promedio">Prom./d&#237;a</th>
+          </tr></thead>
+          <tbody id="tbody"></tbody>
+          <tfoot id="tfoot"></tfoot>
+        </table>
+      </div>
+    </div>
+  </section>
+</div>
+<script src="productividad.js"></script>
+</body>
+</html>
